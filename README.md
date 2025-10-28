@@ -425,4 +425,4 @@ This tool is for personal portfolio tracking only. Always verify data with offic
 
 ## Made with ❤️ for the Indian MF investor community
 
-**Note**: This backend is designed to work with the [My MF Dashboard](https://my-mf-dashboard.github.io) frontend application.
+**Note**: This backend is designed to work with the [My MF Dashboard](https://mf-dashboard.github.io) frontend application.

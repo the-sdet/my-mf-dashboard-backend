@@ -34,7 +34,7 @@
     "type": "git",
     "url": "https://github.com/the-sdet/my-mf-dashboard-backend.git"
   },
-  "homepage": "https://my-mf-dashboard.github.io/",
+  "homepage": "https://mf-dashboard.github.io/",
   "author": "Pabitra Swain",
   "license": "MIT"
 }
