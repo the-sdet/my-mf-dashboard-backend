@@ -1,0 +1,40 @@
+{
+  "name": "my-mf-dashboard-backend",
+  "version": "1.0.0",
+  "description": "MF CAS Parser and Backend APIs for Mutual Fund Dashboard - fetches and aggregates MF data.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^3.3.2",
+    "pdfreader": "^3.0.2",
+    "express-rate-limit": "^7.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "overrides": {
+    "pdf2json": {
+      "@xmldom/xmldom": "^0.8.10",
+      "async": "^3.2.5"
+    }
+  },
+  "keywords": [
+    "casparser",
+    "mutual-fund",
+    "backend",
+    "express"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/the-sdet/my-mf-dashboard-backend.git"
+  },
+  "homepage": "https://my-mf-dashboard.github.io/",
+  "author": "Pabitra Swain",
+  "license": "MIT"
+}
