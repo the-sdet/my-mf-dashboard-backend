@@ -28,13 +28,34 @@ const limiter = rateLimit({
 
 app.use("/api", limiter);
 
+// --- Detect environment automatically ---
+const isRender = !!process.env.RENDER;
+const isLocal = !isRender;
+
+const allowedOrigins = isLocal
+  ? ["http://127.0.0.1:5500", "http://localhost:5500", "http://localhost:3000"]
+  : ["https://mf-dashboard.github.io"];
+
+// --- Apply CORS dynamically ---
 app.use(
   cors({
-    origin: "https://mf-dashboard.github.io",
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.warn("❌ CORS blocked origin:", origin);
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     methods: ["GET", "POST"],
     credentials: true,
   })
 );
+
+console.log("🌍 Environment detected:", isLocal ? "LOCAL" : "RENDER");
+console.log("✅ Allowed Origins:", allowedOrigins.join(", "));
 
 app.use(express.json());
 const upload = multer({ dest: "uploads/" });
