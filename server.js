@@ -26,11 +26,11 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use("/api", limiter);
-
 // --- Detect environment automatically ---
 const isRender = !!process.env.RENDER;
 const isLocal = !isRender;
+
+if (!isLocal) app.use("/api", limiter);
 
 const allowedOrigins = isLocal
   ? ["http://127.0.0.1:5500", "http://localhost:5500", "http://localhost:3000"]

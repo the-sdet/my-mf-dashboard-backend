@@ -1,6 +1,6 @@
 /**
  * @file parser.js
- * @description A line by line Express CAS Parser to parse Mutual Fund CAS statements.
+ * @description A line by line Express CAS Parser to parse Mutual Fund CAS statements (both Detailed and Summary).
  * @author Pabitra Swain - https://github.com/the-sdet
  * @license MIT
  */
@@ -10,6 +10,242 @@ export function parseCAS(text) {
     throw new Error("Invalid input: text must be a non-empty string");
   }
 
+  // Detect CAS type
+  const casType = detectCASType(text);
+
+  if (casType === "SUMMARY") {
+    return parseSummaryCAS(text);
+  } else {
+    return parseDetailedCAS(text);
+  }
+}
+
+function detectCASType(text) {
+  // Check for "Consolidated Account Summary" vs "Consolidated Account Statement"
+  if (text.includes("Consolidated Account Summary")) {
+    return "SUMMARY";
+  } else if (text.includes("Consolidated Account Statement")) {
+    return "DETAILED";
+  }
+  // Default to detailed if can't determine
+  return "DETAILED";
+}
+
+function parseSummaryCAS(text) {
+  const result = {
+    statement_period: { from: null, to: null },
+    file_type: "CAMS",
+    cas_type: "SUMMARY",
+    investor_info: {
+      email: null,
+      name: null,
+      mobile: null,
+      address: null,
+    },
+    current_value: 0,
+    cost: 0,
+    folios: [],
+  };
+
+  // Extract statement date (only single date for summary)
+  const dateMatch = text.match(/As on (\d{2}-[A-Z][a-z]{2}-\d{4})/);
+  if (dateMatch) {
+    const date = convertDate(dateMatch[1]);
+    result.statement_period.to = date;
+  }
+
+  // Extract investor info
+  const emailMatch = text.match(/Email Id:\s*([^\n]+)/);
+  if (emailMatch) result.investor_info.email = emailMatch[1].trim();
+
+  const mobileMatch = text.match(/Mobile:\s*(\+?\d+)/);
+  if (mobileMatch) result.investor_info.mobile = mobileMatch[1];
+
+  // Name and address
+  const nameAddrMatch = text.match(/Email Id:[^\n]*\n([\s\S]+?)Mobile:/);
+  if (nameAddrMatch) {
+    const lines = nameAddrMatch[1]
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l);
+    result.investor_info.name = lines[0] || "";
+    result.investor_info.address = lines.slice(1).join(", ");
+  }
+
+  const lines = text.split(/\r?\n/);
+
+  // --- Identify start & end ---
+  const startIndex = lines.findIndex((l) =>
+    l.includes("Market Value Folio No.")
+  );
+  const endIndex = lines.findIndex((l) => l.startsWith("Total "));
+
+  if (startIndex === -1 || endIndex === -1) {
+    throw new Error("Could not find summary section boundaries");
+  }
+
+  const section = lines
+    .slice(startIndex + 1, endIndex)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const totalLine = lines[endIndex];
+  const totalMatch = totalLine.match(/^Total\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)/);
+
+  result.current_value = parseFloat((totalMatch?.[1] ?? 0).replace(/,/g, ""));
+  result.cost = parseFloat((totalMatch?.[2] ?? 0).replace(/,/g, ""));
+  // Parse summary holdings
+  result.folios = parseSummaryHoldings(section);
+
+  return result;
+}
+
+function parseSummaryHoldings(section) {
+  const folios = [];
+  for (let i = 0; i < section.length - 1; i++) {
+    const line1 = section[i];
+    const line2 = section[i + 1];
+
+    //Folio line must start with a number (folio no.)
+    if (!/^\d/.test(line1)) continue;
+
+    //First line pattern (flexible spacing and optional "-" blocks)
+    const line1Match = line1.match(
+      /^(\S+)\s+([\d,]+\.\d+)\s+([A-Z0-9\s]+?)\s+-\s+(.+)$/
+    );
+    if (!line1Match) continue;
+
+    const [, folio, current_value, rta_code, scheme] = line1Match;
+
+    //Next line: units, nav-date, nav, rta, isin, cost
+    const line2Match = line2.match(
+      /^([\d,]+\.\d+)\s+(\d{2}-[A-Za-z]{3}-\d{4})\s+([\d,.]+)\s+(\S+)\s+(\S+)\s+([\d,]+\.\d+)$/
+    );
+    if (!line2Match) continue;
+
+    const [, units, nav_date, nav, rta, isin, cost] = line2Match;
+
+    folios.push({
+      folio,
+      current_value: parseFloat(current_value.replace(/,/g, "")),
+      cost: parseFloat(cost.replace(/,/g, "")),
+      rta_code: rta_code.trim().replace(/\s+/g, ""),
+      scheme: scheme.trim(),
+      units: parseFloat(units.replace(/,/g, "")),
+      nav_date,
+      nav: parseFloat(nav.replace(/,/g, "")),
+      rta,
+      isin,
+
+      amc: determineAMCFromSchemeName(scheme),
+    });
+
+    i++; // Skip the 2nd line since we’ve already consumed it
+  }
+
+  return folios;
+}
+
+function determineAMCFromSchemeName(schemeName) {
+  const AMCs = [
+    "360 ONE Mutual Fund",
+    "Aditya Birla Sun Life Mutual Fund",
+    "Axis Mutual Fund",
+    "Bajaj Finserv Mutual Fund",
+    "Bandhan Mutual Fund",
+    "Bank of India Mutual Fund",
+    "Baroda BNP Paribas Mutual Fund",
+    "Canara Robeco Mutual Fund",
+    "Capitalmind Mutual Fund",
+    "Choice Mutual Fund",
+    "CRB Mutual Fund",
+    "DSP Mutual Fund",
+    "Edelweiss Mutual Fund",
+    "Franklin Templeton Mutual Fund",
+    "Groww Mutual Fund",
+    "Helios Mutual Fund",
+    "HDFC Mutual Fund",
+    "HSBC Mutual Fund",
+    "ICICI Prudential Mutual Fund",
+    "IDBI Mutual Fund",
+    "Invesco Mutual Fund",
+    "ITI Mutual Fund",
+    "JM Financial Mutual Fund",
+    "JioBlackRock Mutual Fund",
+    "JPMorgan Mutual Fund",
+    "Kotak Mahindra Mutual Fund",
+    "L&T Mutual Fund",
+    "LIC Mutual Fund",
+    "Mahindra Manulife Mutual Fund",
+    "Mirae Asset Mutual Fund",
+    "Motilal Oswal Mutual Fund",
+    "Navi Mutual Fund",
+    "Nippon India Mutual Fund",
+    "Old Bridge Mutual Fund",
+    "PGIM India Mutual Fund",
+    "PineBridge Mutual Fund",
+    "PPFAS Mutual Fund",
+    "Principal Mutual Fund",
+    "Quant MF",
+    "Quantum Mutual Fund",
+    "Samco Mutual Fund",
+    "SBI Mutual Fund",
+    "Shriram Mutual Fund",
+    "Sundaram Mutual Fund",
+    "Tata Mutual Fund",
+    "Taurus Mutual Fund",
+    "TRUST Mutual Fund",
+    "Union Mutual Fund",
+    "UTI Mutual Fund",
+    "WhiteOak Capital Mutual Fund",
+    "Zerodha Mutual Fund",
+    "Angel One Mutual Fund",
+  ];
+
+  const normalize = (s) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const firstWord = normalize(schemeName).split(" ")[0];
+
+  const similarity = (a, b) => {
+    const m = Array.from({ length: a.length + 1 }, (_, i) =>
+      Array(b.length + 1).fill(0)
+    );
+    for (let i = 0; i <= a.length; i++) m[i][0] = i;
+    for (let j = 0; j <= b.length; j++) m[0][j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        m[i][j] = Math.min(
+          m[i - 1][j] + 1,
+          m[i][j - 1] + 1,
+          m[i - 1][j - 1] + cost
+        );
+      }
+    }
+    const dist = m[a.length][b.length];
+    return 1 - dist / Math.max(a.length, b.length);
+  };
+
+  let bestAMC = "Unknown AMC";
+  let bestScore = 0;
+
+  for (const amc of AMCs) {
+    const amcFirst = normalize(amc).split(" ")[0];
+    const score = similarity(firstWord, amcFirst);
+    if (score > bestScore) {
+      bestScore = score;
+      bestAMC = amc;
+    }
+  }
+
+  return bestScore > 0.6 ? bestAMC : "Unknown AMC";
+}
+
+function parseDetailedCAS(text) {
   const result = {
     statement_period: { from: null, to: null },
     file_type: "CAMS",
