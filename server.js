@@ -296,9 +296,16 @@ app.post("/api/update-nav-only", async (req, res) => {
           if (!last_nav_date) {
             isFullHistory = true;
           } else {
-            const lastDate = new Date(last_nav_date);
+            // Parse DD-MM-YYYY format
+            const [day, month, year] = last_nav_date.split("-");
+            const lastDate = new Date(`${year}-${month}-${day}`);
+
             navEntries = navHistory.data.filter((entry) => {
-              const entryDate = new Date(entry.date);
+              // Assuming entry.date is also in DD-MM-YYYY format
+              const [entryDay, entryMonth, entryYear] = entry.date.split("-");
+              const entryDate = new Date(
+                `${entryYear}-${entryMonth}-${entryDay}`
+              );
               return entryDate > lastDate;
             });
           }
