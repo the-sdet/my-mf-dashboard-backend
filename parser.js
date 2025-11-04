@@ -708,7 +708,8 @@ function parseTransactionLine(line) {
   const amount = parseFloat(amountStr.replace(/[()]/g, ""));
 
   // NAV
-  const nav = parseFloat(parts[2]) || 0;
+  const navStr = parts[2].replace(/,/g, "").replace(/[()]/g, "");
+  const nav = parseFloat(navStr) || 0;
 
   // Units
   const unitsStr = parts[3].replace(/,/g, "");
