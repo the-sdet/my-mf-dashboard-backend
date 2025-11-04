@@ -740,11 +740,11 @@ function parseTransactionLine(line) {
     units: units,
     nav: nav,
     balance: balance,
-    type: determineTransactionType(description, units),
+    type: determineTransactionType(description, unitsStr),
   };
 }
 
-function determineTransactionType(desc, units) {
+function determineTransactionType(desc, unitStr) {
   const d = desc.toLowerCase();
 
   // Check for redemption first (including reversed purchases)
@@ -763,7 +763,9 @@ function determineTransactionType(desc, units) {
 
   // Check for switch (use units to determine direction)
   if (/switch/i.test(d)) {
-    return units >= 0 ? "SWITCH_IN" : "SWITCH_OUT";
+    return unitStr.trim().startsWith("(") && unitStr.trim().endsWith(")")
+      ? "SWITCH_OUT"
+      : "SWITCH_IN";
   }
 
   // Check for other transaction types
