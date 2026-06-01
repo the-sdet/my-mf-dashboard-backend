@@ -76,7 +76,7 @@ function parseSummaryCAS(text) {
 
   // --- Identify start & end ---
   const startIndex = lines.findIndex((l) =>
-    l.includes("Market Value Folio No.")
+    l.includes("Market Value Folio No."),
   );
   const endIndex = lines.findIndex((l) => l.startsWith("Total "));
 
@@ -110,7 +110,7 @@ function parseSummaryHoldings(section) {
 
     //First line pattern (flexible spacing and optional "-" blocks)
     const line1Match = line1.match(
-      /^(\S+)\s+([\d,]+\.\d+)\s+([A-Z0-9\s]+?)\s+-\s+(.+)$/
+      /^(\S+)\s+([\d,]+\.\d+)\s+([A-Z0-9\s]+?)\s+-\s+(.+)$/,
     );
     if (!line1Match) continue;
 
@@ -118,7 +118,7 @@ function parseSummaryHoldings(section) {
 
     //Next line: units, nav-date, nav, rta, isin, cost
     const line2Match = line2.match(
-      /^([\d,]+\.\d+)\s+(\d{2}-[A-Za-z]{3}-\d{4})\s+([\d,.]+)\s+(\S+)\s+(\S+)\s+([\d,]+\.\d+)$/
+      /^([\d,]+\.\d+)\s+(\d{2}-[A-Za-z]{3}-\d{4})\s+([\d,.]+)\s+(\S+)\s+(\S+)\s+([\d,]+\.\d+)$/,
     );
     if (!line2Match) continue;
 
@@ -212,7 +212,7 @@ function determineAMCFromSchemeName(schemeName) {
 
   const similarity = (a, b) => {
     const m = Array.from({ length: a.length + 1 }, (_, i) =>
-      Array(b.length + 1).fill(0)
+      Array(b.length + 1).fill(0),
     );
     for (let i = 0; i <= a.length; i++) m[i][0] = i;
     for (let j = 0; j <= b.length; j++) m[0][j] = j;
@@ -222,7 +222,7 @@ function determineAMCFromSchemeName(schemeName) {
         m[i][j] = Math.min(
           m[i - 1][j] + 1,
           m[i][j - 1] + 1,
-          m[i - 1][j - 1] + cost
+          m[i - 1][j - 1] + cost,
         );
       }
     }
@@ -261,7 +261,7 @@ function parseDetailedCAS(text) {
 
   // Extract statement period
   const periodMatch = text.match(
-    /(\d{2}-[A-Z][a-z]{2}-\d{4})\s+To\s+(\d{2}-[A-Z][a-z]{2}-\d{4})/
+    /(\d{2}-[A-Z][a-z]{2}-\d{4})\s+To\s+(\d{2}-[A-Z][a-z]{2}-\d{4})/,
   );
   if (periodMatch) {
     result.statement_period.from = convertDate(periodMatch[1]);
@@ -471,7 +471,7 @@ function parseLineByLine(text) {
 
       // Check if this folio already exists for this AMC
       currentFolio = folios.find(
-        (f) => f.folio === folioNumber && f.amc === currentAMC
+        (f) => f.folio === folioNumber && f.amc === currentAMC,
       );
 
       if (!currentFolio) {
@@ -546,7 +546,7 @@ function parseLineByLine(text) {
       const costMatch = line.match(PATTERNS.costValue);
       if (costMatch) {
         currentScheme.valuation.cost = parseFloat(
-          costMatch[1].replace(/,/g, "")
+          costMatch[1].replace(/,/g, ""),
         );
       }
 
@@ -577,7 +577,7 @@ function parseLineByLine(text) {
       const valueMatch = line.match(PATTERNS.marketValue);
       if (valueMatch) {
         currentScheme.valuation.value = parseFloat(
-          valueMatch[1].replace(/,/g, "")
+          valueMatch[1].replace(/,/g, ""),
         );
       }
       continue;
@@ -608,7 +608,7 @@ function parseSchemeInfo(line) {
   // Format: RTA_CODE - Scheme Name - ISIN : CODE (Advisor : CODE) Registrar : CODE
 
   const isinMatch = line.match(
-    /ISIN\s*:\s*([A-Z0-9\s]+?)(?=\s*\(|\s+Advisor|Registrar|$)/
+    /ISIN\s*:\s*([A-Z0-9\s]+?)(?=\s*\(|\s+Advisor|Registrar|$)/,
   );
   if (!isinMatch) return null;
 
@@ -618,7 +618,7 @@ function parseSchemeInfo(line) {
   if (isin.length !== 12) return null;
 
   const advisorMatch = line.match(
-    /Advisor\s*:?\s*((?:INZ|INA|CAT)[A-Za-z0-9\s]*|DIRECT)/i
+    /Advisor\s*:?\s*((?:INZ|INA|CAT)[A-Za-z0-9\s]*|DIRECT)/i,
   );
   const advisor = advisorMatch ? advisorMatch[1].replace(/\s+/g, "") : null;
 
@@ -751,14 +751,16 @@ function determineTransactionType(desc, unitStr) {
   // Check for redemption first (including reversed purchases)
   if (
     /purchase[-\s]*reversed|systematic investment purchase[-\s]*reversed|redemption/i.test(
-      d
+      d,
     )
   ) {
     return "REDEMPTION";
   }
 
   // Check for purchase
-  if (/purchase|systematic investment/i.test(d)) {
+  if (
+    /purchase|systematic investment|sys investment|sys. investment/i.test(d)
+  ) {
     return "PURCHASE";
   }
 
