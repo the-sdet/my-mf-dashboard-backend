@@ -750,7 +750,7 @@ function determineTransactionType(desc, unitStr) {
 
   // Check for redemption first (including reversed purchases)
   if (
-    /purchase[-\s]*reversed|systematic investment purchase[-\s]*reversed|redemption/i.test(
+    /purchase[-\s]*reversed|systematic investment purchase[-\s]*reversed|redemption|reversal|cheque[-\s]*dishonoured|collection[-\s]*dishonoured/i.test(
       d,
     )
   ) {
