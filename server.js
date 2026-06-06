@@ -51,7 +51,7 @@ app.use(
     },
     methods: ["GET", "POST"],
     credentials: true,
-  })
+  }),
 );
 
 console.log("🌍 Environment detected:", isLocal ? "LOCAL" : "RENDER");
@@ -157,6 +157,8 @@ async function getFundDetails(searchKey) {
 
     return {
       amc: mfData.amc_info.name,
+      logo_url: mfData.logo_url,
+      launch_date: mfData.launch_date,
       scheme_name: mfData.scheme_name,
       scheme_code: mfData.scheme_code,
       plan_type: mfData.plan_type,
@@ -165,6 +167,9 @@ async function getFundDetails(searchKey) {
       category: mfData.category,
       sub_category: mfData.sub_category,
       second_category: mfData.category_info?.category,
+      second_category_sub_type: mfData.category_info?.sub_type,
+      category_helper_text: mfData.category_info?.category_helper_text,
+      tax_impact: mfData.category_info?.tax_impact,
       holdings: mfData.holdings || [],
       expense_ratio: mfData.expense_ratio,
       aum: mfData.aum,
@@ -177,6 +182,7 @@ async function getFundDetails(searchKey) {
       nav_history: navHistory?.data || [],
       meta: navHistory?.meta || {},
       benchmark: mfData?.benchmark || "",
+      rta: mfData.rta_details?.rta_name,
     };
   } catch (err) {
     console.error("Error fetching fund details:", err);
@@ -304,7 +310,7 @@ app.post("/api/update-nav-only", async (req, res) => {
               // Assuming entry.date is also in DD-MM-YYYY format
               const [entryDay, entryMonth, entryYear] = entry.date.split("-");
               const entryDate = new Date(
-                `${entryYear}-${entryMonth}-${entryDay}`
+                `${entryYear}-${entryMonth}-${entryDay}`,
               );
               return entryDate > lastDate;
             });
@@ -344,10 +350,10 @@ app.get("/health", (req, res) =>
   res.json({
     status: "ok",
     message: "MF Dashboard Backend API is up & running...",
-  })
+  }),
 );
 
 // -------------------- START SERVER --------------------
 app.listen(PORT, () =>
-  console.log(`🚀 Backend server running on port ${PORT}`)
+  console.log(`🚀 Backend server running on port ${PORT}`),
 );
