@@ -83,6 +83,8 @@ Returns server status and available endpoints.
   "endpoints": [
     "POST /api/parse-cas",
     "POST /api/mf-stats",
+    "POST /api/mf-stats/core",
+    "POST /api/mf-stats/extended",
     "POST /api/update-nav-only"
   ]
 }
@@ -127,13 +129,13 @@ Upload and parse a CAS PDF file.
 }
 ```
 
-### Fetch MF Statistics
+### Fetch MF Statistics (Full)
 
 ```http
 POST /api/mf-stats
 ```
 
-Get comprehensive statistics for multiple mutual funds.
+Get comprehensive statistics for multiple mutual funds in a single blocking call. Fetches Groww metadata, portfolio stats, and full NAV history concurrently per fund (up to 10 funds in parallel).
 
 **Request:**
 
@@ -159,8 +161,63 @@ Get comprehensive statistics for multiple mutual funds.
       "expense_ratio": 1.85,
       "aum": 15000,
       "return_stats": {...},
+      "sip_return": {...},
       "holdings": [...],
+      "portfolio_stats": {...},
       "nav_history": [...]
+    }
+  }
+}
+```
+
+### Fetch MF Core Stats (Fast Path)
+
+```http
+POST /api/mf-stats/core
+```
+
+Fetches only the data needed to render the portfolio immediately — Groww metadata (amc, category, holdings, return_stats, expense_ratio, benchmark etc.) and full NAV history from MFAPI. Groww search and MFAPI calls run concurrently per fund. Used as Phase 1 of the two-phase initial load.
+
+**Request:**
+
+```json
+{
+  "searchKeys": ["fund-name-1", "fund-name-2"]
+}
+```
+
+**Response:** Same shape as `/api/mf-stats` but without `portfolio_stats`.
+
+### Fetch MF Extended Stats (Background)
+
+```http
+POST /api/mf-stats/extended
+```
+
+Fetches only `portfolio_stats` (Groww `/stats` endpoint) for funds already loaded via `/core`. Takes `scheme_code` and `isin` directly — no Groww search call needed. Used as Phase 2 of the two-phase load, fired in the background after the portfolio is already rendered.
+
+**Request:**
+
+```json
+{
+  "funds": [
+    { "isin": "INF123456789", "scheme_code": "119551" },
+    { "isin": "INF987654321", "scheme_code": "120503" }
+  ]
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Extended stats fetched for 2 funds",
+  "data": {
+    "INF123456789": {
+      "isin": "INF123456789",
+      "scheme_code": "119551",
+      "portfolio_stats": {...}
     }
   }
 }

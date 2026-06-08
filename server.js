@@ -68,6 +68,8 @@ app.get("/", (req, res) => {
     endpoints: [
       "POST /api/parse-cas",
       "POST /api/mf-stats",
+      "POST /api/mf-stats/core",
+      "POST /api/mf-stats/extended",
       "POST /api/update-nav-only",
     ],
   });
@@ -106,6 +108,31 @@ async function readCAS(filePath, password) {
       }
     });
   });
+}
+
+// -------------------- CONCURRENCY HELPER --------------------
+async function pLimit(tasks, concurrency) {
+  const results = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const i = index++;
+      try {
+        results[i] = await tasks[i]();
+      } catch (err) {
+        results[i] = null;
+        console.error(`Task ${i} failed:`, err.message);
+      }
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, tasks.length) },
+    worker,
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 // -------------------- MF DATA FETCH HELPERS --------------------
@@ -152,8 +179,11 @@ async function getFundDetails(searchKey) {
     const mfData = await getMFDetails(searchKey);
     if (!mfData || !mfData.scheme_code) return null;
 
-    const stats = await getFundStats(mfData.scheme_code);
-    const navHistory = await getFundNAVHistory(mfData.scheme_code);
+    // Run stats + NAV history concurrently — both only need scheme_code
+    const [stats, navHistory] = await Promise.all([
+      getFundStats(mfData.scheme_code),
+      getFundNAVHistory(mfData.scheme_code),
+    ]);
 
     return {
       amc: mfData.amc_info.name,
@@ -193,18 +223,83 @@ async function getFundDetails(searchKey) {
 async function fetchMFStats(searchKeys) {
   try {
     const allFunds = {};
+    const CONCURRENCY = 10;
 
-    for (const searchKey of searchKeys) {
-      const fundDetails = await getFundDetails(searchKey);
+    const tasks = searchKeys.map(
+      (searchKey) => () => getFundDetails(searchKey),
+    );
+    const results = await pLimit(tasks, CONCURRENCY);
+
+    results.forEach((fundDetails) => {
       if (fundDetails && fundDetails.isin) {
         allFunds[fundDetails.isin] = fundDetails;
       }
-    }
+    });
 
     return allFunds;
   } catch (err) {
     console.error("Error in fetchMFStats:", err);
     return {};
+  }
+}
+
+// Core-only fetch: just Groww search + mfapi NAV history (no portfolio stats)
+async function getFundCore(searchKey) {
+  try {
+    const mfData = await getMFDetails(searchKey);
+    if (!mfData || !mfData.scheme_code) return null;
+
+    // mfapi NAV history is the only slow call — run it concurrently with nothing to wait on
+    const navHistory = await getFundNAVHistory(mfData.scheme_code);
+
+    // Include ALL Groww search fields here — no reason to re-call getMFDetails in extended
+    return {
+      amc: mfData.amc_info?.name,
+      logo_url: mfData.logo_url,
+      launch_date: mfData.launch_date,
+      scheme_name: mfData.scheme_name,
+      scheme_code: mfData.scheme_code,
+      plan_type: mfData.plan_type,
+      scheme_type: mfData.scheme_type,
+      isin: mfData.isin,
+      category: mfData.category,
+      sub_category: mfData.sub_category,
+      second_category: mfData.category_info?.category,
+      second_category_sub_type: mfData.category_info?.sub_type,
+      category_helper_text: mfData.category_info?.category_helper_text,
+      tax_impact: mfData.category_info?.tax_impact,
+      holdings: mfData.holdings || [],
+      expense_ratio: mfData.expense_ratio,
+      aum: mfData.aum,
+      groww_rating: mfData.groww_rating,
+      return_stats: mfData.return_stats?.[0] || {},
+      sip_return: mfData?.sip_return || {},
+      benchmark: mfData?.benchmark || "",
+      rta: mfData.rta_details?.rta_name,
+      latest_nav: navHistory?.data?.[0]?.nav || 0,
+      latest_nav_date: navHistory?.data?.[0]?.date || 0,
+      nav_history: navHistory?.data || [],
+      meta: navHistory?.meta || {},
+    };
+  } catch (err) {
+    console.error("Error fetching fund core:", err);
+    return null;
+  }
+}
+
+// Extended-only fetch: just getFundStats — everything else already came from core
+// Takes scheme_code directly (passed from frontend) so no Groww search call needed
+async function getFundExtended(schemeCode, isin) {
+  try {
+    const stats = await getFundStats(schemeCode);
+    return {
+      isin,
+      scheme_code: schemeCode,
+      portfolio_stats: stats || {},
+    };
+  } catch (err) {
+    console.error("Error fetching fund extended:", err);
+    return null;
   }
 }
 
@@ -263,6 +358,80 @@ app.post("/api/mf-stats", async (req, res) => {
   }
 });
 
+// Core endpoint: returns NAV history + essential fields only, fast path
+app.post("/api/mf-stats/core", async (req, res) => {
+  try {
+    const { searchKeys } = req.body;
+
+    if (!searchKeys || !Array.isArray(searchKeys) || searchKeys.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, error: "searchKeys array required" });
+    }
+
+    const CONCURRENCY = 10;
+    const allFunds = {};
+
+    const tasks = searchKeys.map((key) => () => getFundCore(key));
+    const results = await pLimit(tasks, CONCURRENCY);
+
+    results.forEach((fund) => {
+      if (fund && fund.isin) {
+        allFunds[fund.isin] = fund;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Core stats fetched for ${Object.keys(allFunds).length} funds`,
+      data: allFunds,
+    });
+  } catch (err) {
+    console.error("Error fetching core MF stats:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Extended endpoint: only fetches portfolio/stats per fund — no Groww search, no mfapi
+// Expects: { funds: [ { isin, scheme_code }, ... ] }
+app.post("/api/mf-stats/extended", async (req, res) => {
+  try {
+    const { funds } = req.body;
+
+    if (!funds || !Array.isArray(funds) || funds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "funds array required: [{isin, scheme_code}]",
+      });
+    }
+
+    const CONCURRENCY = 10;
+    const allFunds = {};
+
+    const tasks = funds.map(
+      ({ isin, scheme_code }) =>
+        () =>
+          getFundExtended(scheme_code, isin),
+    );
+    const results = await pLimit(tasks, CONCURRENCY);
+
+    results.forEach((fund) => {
+      if (fund && fund.isin) {
+        allFunds[fund.isin] = fund;
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Extended stats fetched for ${Object.keys(allFunds).length} funds`,
+      data: allFunds,
+    });
+  } catch (err) {
+    console.error("Error fetching extended MF stats:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post("/api/update-nav-only", async (req, res) => {
   try {
     const { navUpdateData } = req.body;
@@ -284,56 +453,53 @@ app.post("/api/update-nav-only", async (req, res) => {
     const navUpdates = {};
     let updatedCount = 0;
 
-    for (const isin of isins) {
+    const CONCURRENCY = 10;
+    const tasks = isins.map((isin) => async () => {
       const { scheme_code, last_nav_date } = navUpdateData[isin];
 
       if (!scheme_code) {
         console.warn(`No scheme_code for ISIN ${isin}, skipping`);
-        continue;
+        return;
       }
 
-      try {
-        const navHistory = await getFundNAVHistory(scheme_code);
+      const navHistory = await getFundNAVHistory(scheme_code);
 
-        if (navHistory && navHistory.data && navHistory.data.length > 0) {
-          let navEntries = navHistory.data;
-          let isFullHistory = false;
+      if (navHistory && navHistory.data && navHistory.data.length > 0) {
+        let navEntries = navHistory.data;
+        let isFullHistory = false;
 
-          if (!last_nav_date) {
-            isFullHistory = true;
-          } else {
-            // Parse DD-MM-YYYY format
-            const [day, month, year] = last_nav_date.split("-");
-            const lastDate = new Date(`${year}-${month}-${day}`);
+        if (!last_nav_date) {
+          isFullHistory = true;
+        } else {
+          const [day, month, year] = last_nav_date.split("-");
+          const lastDate = new Date(`${year}-${month}-${day}`);
 
-            navEntries = navHistory.data.filter((entry) => {
-              // Assuming entry.date is also in DD-MM-YYYY format
-              const [entryDay, entryMonth, entryYear] = entry.date.split("-");
-              const entryDate = new Date(
-                `${entryYear}-${entryMonth}-${entryDay}`,
-              );
-              return entryDate > lastDate;
-            });
-          }
-
-          const latestNav = navHistory.data[0]?.nav;
-          const latestNavDate = navHistory.data[0]?.date;
-
-          if (navEntries.length > 0 || isFullHistory) {
-            navUpdates[isin] = {
-              latest_nav: latestNav,
-              latest_nav_date: latestNavDate,
-              nav_entries: navEntries,
-              is_full_history: isFullHistory,
-              meta: navHistory.meta,
-            };
-            updatedCount++;
-          }
+          navEntries = navHistory.data.filter((entry) => {
+            const [entryDay, entryMonth, entryYear] = entry.date.split("-");
+            const entryDate = new Date(
+              `${entryYear}-${entryMonth}-${entryDay}`,
+            );
+            return entryDate > lastDate;
+          });
         }
-      } catch (err) {
-        console.error(`Error updating NAV for ${isin}:`, err);
+
+        const latestNav = navHistory.data[0]?.nav;
+        const latestNavDate = navHistory.data[0]?.date;
+
+        if (navEntries.length > 0 || isFullHistory) {
+          navUpdates[isin] = {
+            latest_nav: latestNav,
+            latest_nav_date: latestNavDate,
+            nav_entries: navEntries,
+            is_full_history: isFullHistory,
+            meta: navHistory.meta,
+          };
+          updatedCount++;
+        }
       }
-    }
+    });
+
+    await pLimit(tasks, CONCURRENCY);
 
     res.json({
       success: true,
