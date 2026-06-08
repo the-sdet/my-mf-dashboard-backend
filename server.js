@@ -215,7 +215,7 @@ async function getFundDetails(searchKey) {
       nav_history: navHistory?.data || [],
       meta: navHistory?.meta || {},
       benchmark: mfData?.benchmark || "",
-      rta: mfData.registrar_agent,
+      rta: mfData.rta_details?.rta_name,
       manager: mfData.fund_manager,
     };
   } catch (err) {
@@ -282,7 +282,7 @@ async function getFundCore(searchKey) {
       sip_return: mfData?.sip_return || {},
       simple_return: mfData?.simple_return || {},
       benchmark: mfData?.benchmark || "",
-      rta: mfData.registrar_agent,
+      rta: mfData.rta_details?.rta_name,
       manager: mfData.fund_manager,
       latest_nav: navHistory?.data?.[0]?.nav || 0,
       latest_nav_date: navHistory?.data?.[0]?.date || 0,
