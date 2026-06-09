@@ -68,8 +68,6 @@ app.get("/", (req, res) => {
     endpoints: [
       "POST /api/parse-cas",
       "POST /api/mf-stats",
-      "POST /api/mf-stats/core",
-      "POST /api/mf-stats/extended",
       "POST /api/update-nav-only",
     ],
   });
@@ -248,69 +246,6 @@ async function fetchMFStats(searchKeys) {
 }
 
 // Core-only fetch: just Groww search + mfapi NAV history (no portfolio stats)
-async function getFundCore(searchKey) {
-  try {
-    const mfData = await getMFDetails(searchKey);
-    if (!mfData || !mfData.scheme_code) return null;
-
-    // mfapi NAV history is the only slow call — run it concurrently with nothing to wait on
-    const navHistory = await getFundNAVHistory(mfData.scheme_code);
-
-    // Include ALL Groww search fields here — no reason to re-call getMFDetails in extended
-    return {
-      amc: mfData.amc_info?.name,
-      logo_url: mfData.logo_url,
-      launch_date: mfData.launch_date,
-      scheme_name: mfData.scheme_name,
-      scheme_code: mfData.scheme_code,
-      meta_desc: mfData.meta_desc,
-      plan_type: mfData.plan_type,
-      scheme_type: mfData.scheme_type,
-      isin: mfData.isin,
-      category: mfData.category,
-      sub_category: mfData.sub_category,
-      second_category: mfData.category_info?.category,
-      second_category_sub_type: mfData.category_info?.sub_type,
-      category_helper_text: mfData.category_info?.category_helper_text,
-      tax_impact: mfData.category_info?.tax_impact,
-      holdings: mfData.holdings || [],
-      expense_ratio: mfData.expense_ratio,
-      portfolio_turnover: mfData.portfolio_turnover,
-      aum: mfData.aum,
-      groww_rating: mfData.groww_rating,
-      return_stats: mfData.return_stats?.[0] || {},
-      sip_return: mfData?.sip_return || {},
-      simple_return: mfData?.simple_return || {},
-      benchmark: mfData?.benchmark || "",
-      rta: mfData.rta_details?.rta_name,
-      manager: mfData.fund_manager,
-      latest_nav: navHistory?.data?.[0]?.nav || 0,
-      latest_nav_date: navHistory?.data?.[0]?.date || 0,
-      nav_history: navHistory?.data || [],
-      meta: navHistory?.meta || {},
-    };
-  } catch (err) {
-    console.error("Error fetching fund core:", err);
-    return null;
-  }
-}
-
-// Extended-only fetch: just getFundStats — everything else already came from core
-// Takes scheme_code directly (passed from frontend) so no Groww search call needed
-async function getFundExtended(schemeCode, isin) {
-  try {
-    const stats = await getFundStats(schemeCode);
-    return {
-      isin,
-      scheme_code: schemeCode,
-      portfolio_stats: stats || {},
-    };
-  } catch (err) {
-    console.error("Error fetching fund extended:", err);
-    return null;
-  }
-}
-
 // -------------------- API ENDPOINTS --------------------
 app.post("/api/parse-cas", upload.single("file"), async (req, res) => {
   const filePath = req.file.path;
@@ -362,80 +297,6 @@ app.post("/api/mf-stats", async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching MF stats:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Core endpoint: returns NAV history + essential fields only, fast path
-app.post("/api/mf-stats/core", async (req, res) => {
-  try {
-    const { searchKeys } = req.body;
-
-    if (!searchKeys || !Array.isArray(searchKeys) || searchKeys.length === 0) {
-      return res
-        .status(400)
-        .json({ success: false, error: "searchKeys array required" });
-    }
-
-    const CONCURRENCY = 10;
-    const allFunds = {};
-
-    const tasks = searchKeys.map((key) => () => getFundCore(key));
-    const results = await pLimit(tasks, CONCURRENCY);
-
-    results.forEach((fund) => {
-      if (fund && fund.isin) {
-        allFunds[fund.isin] = fund;
-      }
-    });
-
-    res.json({
-      success: true,
-      message: `Core stats fetched for ${Object.keys(allFunds).length} funds`,
-      data: allFunds,
-    });
-  } catch (err) {
-    console.error("Error fetching core MF stats:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Extended endpoint: only fetches portfolio/stats per fund — no Groww search, no mfapi
-// Expects: { funds: [ { isin, scheme_code }, ... ] }
-app.post("/api/mf-stats/extended", async (req, res) => {
-  try {
-    const { funds } = req.body;
-
-    if (!funds || !Array.isArray(funds) || funds.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "funds array required: [{isin, scheme_code}]",
-      });
-    }
-
-    const CONCURRENCY = 10;
-    const allFunds = {};
-
-    const tasks = funds.map(
-      ({ isin, scheme_code }) =>
-        () =>
-          getFundExtended(scheme_code, isin),
-    );
-    const results = await pLimit(tasks, CONCURRENCY);
-
-    results.forEach((fund) => {
-      if (fund && fund.isin) {
-        allFunds[fund.isin] = fund;
-      }
-    });
-
-    res.json({
-      success: true,
-      message: `Extended stats fetched for ${Object.keys(allFunds).length} funds`,
-      data: allFunds,
-    });
-  } catch (err) {
-    console.error("Error fetching extended MF stats:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

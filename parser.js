@@ -4,6 +4,68 @@
  * @author Pabitra Swain - https://github.com/the-sdet
  * @license MIT
  */
+// ── Shared AMC registry ─────────────────────────────────────────────────────
+// Single source of truth used by both the Detailed and Summary parsers.
+const AMC_LIST = [
+  "360 ONE Mutual Fund",
+  "Aditya Birla Sun Life Mutual Fund",
+  "Axis Mutual Fund",
+  "Bajaj Finserv Mutual Fund",
+  "Bandhan Mutual Fund",
+  "Bank of India Mutual Fund",
+  "Baroda BNP Paribas Mutual Fund",
+  "Canara Robeco Mutual Fund",
+  "Capitalmind Mutual Fund",
+  "Choice Mutual Fund",
+  "CRB Mutual Fund",
+  "DSP Mutual Fund",
+  "Edelweiss Mutual Fund",
+  "Franklin Templeton Mutual Fund",
+  "Groww Mutual Fund",
+  "Helios Mutual Fund",
+  "HDFC Mutual Fund",
+  "HSBC Mutual Fund",
+  "ICICI Prudential Mutual Fund",
+  "IDBI Mutual Fund",
+  "Invesco Mutual Fund",
+  "ITI Mutual Fund",
+  "JM Financial Mutual Fund",
+  "JioBlackRock Mutual Fund",
+  "JPMorgan Mutual Fund",
+  "Kotak Mahindra Mutual Fund",
+  "L&T Mutual Fund",
+  "LIC Mutual Fund",
+  "Mahindra Manulife Mutual Fund",
+  "Mirae Asset Mutual Fund",
+  "Motilal Oswal Mutual Fund",
+  "Navi Mutual Fund",
+  "Nippon India Mutual Fund",
+  "Old Bridge Mutual Fund",
+  "PGIM India Mutual Fund",
+  "PineBridge Mutual Fund",
+  "PPFAS Mutual Fund",
+  "Principal Mutual Fund",
+  "Quant MF",
+  "Quantum Mutual Fund",
+  "Samco Mutual Fund",
+  "SBI Mutual Fund",
+  "Shriram Mutual Fund",
+  "Sundaram Mutual Fund",
+  "Tata Mutual Fund",
+  "Taurus Mutual Fund",
+  "TRUST Mutual Fund",
+  "Union Mutual Fund",
+  "UTI Mutual Fund",
+  "WhiteOak Capital Mutual Fund",
+  "Zerodha Mutual Fund",
+  "Angel One Mutual Fund",
+];
+
+// Lowercase → original map for O(1) exact prefix matching in the Detailed parser
+const AMC_LOWER_MAP = new Map(AMC_LIST.map((amc) => [amc.toLowerCase(), amc]));
+
+// ────────────────────────────────────────────────────────────────────────────
+
 export function parseCAS(text) {
   // Input validation
   if (!text || typeof text !== "string") {
@@ -146,61 +208,6 @@ function parseSummaryHoldings(section) {
 }
 
 function determineAMCFromSchemeName(schemeName) {
-  const AMCs = [
-    "360 ONE Mutual Fund",
-    "Aditya Birla Sun Life Mutual Fund",
-    "Axis Mutual Fund",
-    "Bajaj Finserv Mutual Fund",
-    "Bandhan Mutual Fund",
-    "Bank of India Mutual Fund",
-    "Baroda BNP Paribas Mutual Fund",
-    "Canara Robeco Mutual Fund",
-    "Capitalmind Mutual Fund",
-    "Choice Mutual Fund",
-    "CRB Mutual Fund",
-    "DSP Mutual Fund",
-    "Edelweiss Mutual Fund",
-    "Franklin Templeton Mutual Fund",
-    "Groww Mutual Fund",
-    "Helios Mutual Fund",
-    "HDFC Mutual Fund",
-    "HSBC Mutual Fund",
-    "ICICI Prudential Mutual Fund",
-    "IDBI Mutual Fund",
-    "Invesco Mutual Fund",
-    "ITI Mutual Fund",
-    "JM Financial Mutual Fund",
-    "JioBlackRock Mutual Fund",
-    "JPMorgan Mutual Fund",
-    "Kotak Mahindra Mutual Fund",
-    "L&T Mutual Fund",
-    "LIC Mutual Fund",
-    "Mahindra Manulife Mutual Fund",
-    "Mirae Asset Mutual Fund",
-    "Motilal Oswal Mutual Fund",
-    "Navi Mutual Fund",
-    "Nippon India Mutual Fund",
-    "Old Bridge Mutual Fund",
-    "PGIM India Mutual Fund",
-    "PineBridge Mutual Fund",
-    "PPFAS Mutual Fund",
-    "Principal Mutual Fund",
-    "Quant MF",
-    "Quantum Mutual Fund",
-    "Samco Mutual Fund",
-    "SBI Mutual Fund",
-    "Shriram Mutual Fund",
-    "Sundaram Mutual Fund",
-    "Tata Mutual Fund",
-    "Taurus Mutual Fund",
-    "TRUST Mutual Fund",
-    "Union Mutual Fund",
-    "UTI Mutual Fund",
-    "WhiteOak Capital Mutual Fund",
-    "Zerodha Mutual Fund",
-    "Angel One Mutual Fund",
-  ];
-
   const normalize = (s) =>
     s
       .toLowerCase()
@@ -208,7 +215,16 @@ function determineAMCFromSchemeName(schemeName) {
       .replace(/\s+/g, " ")
       .trim();
 
-  const firstWord = normalize(schemeName).split(" ")[0];
+  const normalizedScheme = normalize(schemeName);
+
+  // Fast path: exact prefix match against the shared AMC map
+  for (const [amcLower, amcOriginal] of AMC_LOWER_MAP) {
+    const normalizedAmc = normalize(amcLower);
+    if (normalizedScheme.startsWith(normalizedAmc)) return amcOriginal;
+  }
+
+  // Slow path: fuzzy first-word similarity (handles minor typos in CAS data)
+  const firstWord = normalizedScheme.split(" ")[0];
 
   const similarity = (a, b) => {
     const m = Array.from({ length: a.length + 1 }, (_, i) =>
@@ -233,7 +249,7 @@ function determineAMCFromSchemeName(schemeName) {
   let bestAMC = "Unknown AMC";
   let bestScore = 0;
 
-  for (const amc of AMCs) {
+  for (const amc of AMC_LIST) {
     const amcFirst = normalize(amc).split(" ")[0];
     const score = similarity(firstWord, amcFirst);
     if (score > bestScore) {
@@ -304,65 +320,8 @@ function parseLineByLine(text) {
   let expectingName = false;
   let expectingNominee = false;
 
-  // Optimize AMC lookup with lowercase mapping
-  const AMCs = [
-    "360 ONE Mutual Fund",
-    "Aditya Birla Sun Life Mutual Fund",
-    "Axis Mutual Fund",
-    "Bajaj Finserv Mutual Fund",
-    "Bandhan Mutual Fund",
-    "Bank of India Mutual Fund",
-    "Baroda BNP Paribas Mutual Fund",
-    "Canara Robeco Mutual Fund",
-    "Capitalmind Mutual Fund",
-    "Choice Mutual Fund",
-    "CRB Mutual Fund",
-    "DSP Mutual Fund",
-    "Edelweiss Mutual Fund",
-    "Franklin Templeton Mutual Fund",
-    "Groww Mutual Fund",
-    "Helios Mutual Fund",
-    "HDFC Mutual Fund",
-    "HSBC Mutual Fund",
-    "ICICI Prudential Mutual Fund",
-    "IDBI Mutual Fund",
-    "Invesco Mutual Fund",
-    "ITI Mutual Fund",
-    "JM Financial Mutual Fund",
-    "JioBlackRock Mutual Fund",
-    "JPMorgan Mutual Fund",
-    "Kotak Mahindra Mutual Fund",
-    "L&T Mutual Fund",
-    "LIC Mutual Fund",
-    "Mahindra Manulife Mutual Fund",
-    "Mirae Asset Mutual Fund",
-    "Motilal Oswal Mutual Fund",
-    "Navi Mutual Fund",
-    "Nippon India Mutual Fund",
-    "Old Bridge Mutual Fund",
-    "PGIM India Mutual Fund",
-    "PineBridge Mutual Fund",
-    "PPFAS Mutual Fund",
-    "Principal Mutual Fund",
-    "Quant MF",
-    "Quantum Mutual Fund",
-    "Samco Mutual Fund",
-    "SBI Mutual Fund",
-    "Shriram Mutual Fund",
-    "Sundaram Mutual Fund",
-    "Tata Mutual Fund",
-    "Taurus Mutual Fund",
-    "TRUST Mutual Fund",
-    "Union Mutual Fund",
-    "UTI Mutual Fund",
-    "WhiteOak Capital Mutual Fund",
-    "Zerodha Mutual Fund",
-    "Angel One Mutual Fund",
-  ];
-
-  // Create lowercase map for faster AMC lookup
-  const amcLowerMap = new Map();
-  AMCs.forEach((amc) => amcLowerMap.set(amc.toLowerCase(), amc));
+  // Use shared module-level AMC_LOWER_MAP for fast prefix matching
+  const amcLowerMap = AMC_LOWER_MAP;
 
   // Cache compiled regex patterns
   const PATTERNS = {
