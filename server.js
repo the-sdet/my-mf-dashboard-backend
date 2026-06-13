@@ -140,7 +140,24 @@ async function getMFDetails(endpoint) {
   try {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
-    return await response.json();
+    const data = await response.json();
+
+    // If the returned search_id differs, the fund's search_id has changed —
+    // re-fetch using the updated search_id to get the canonical response.
+    if (data?.search_id && data.search_id !== endpoint) {
+      console.log(
+        `🔄 search_id changed: ${endpoint} → ${data.search_id}. Re-fetching...`,
+      );
+      const updatedUrl =
+        "https://groww.in/v1/api/data/mf/web/v4/scheme/search/" +
+        data.search_id;
+      const updatedResponse = await fetch(updatedUrl);
+      if (!updatedResponse.ok)
+        throw new Error(`HTTP error! ${updatedResponse.status}`);
+      return await updatedResponse.json();
+    }
+
+    return data;
   } catch (err) {
     console.error("Error fetching MF details:", err);
     return null;
@@ -193,6 +210,7 @@ async function getFundDetails(searchKey) {
       plan_type: mfData.plan_type,
       scheme_type: mfData.scheme_type,
       isin: mfData.isin,
+      search_id: mfData.search_id,
       category: mfData.category,
       sub_category: mfData.sub_category,
       second_category: mfData.category_info?.category,
