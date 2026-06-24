@@ -138,26 +138,36 @@ async function getMFDetails(endpoint) {
   const url =
     "https://groww.in/v1/api/data/mf/web/v4/scheme/search/" + endpoint;
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
-    const data = await response.json();
+    const response = await fetch(url, { redirect: "manual" });
 
-    // If the returned search_id differs, the fund's search_id has changed —
-    // re-fetch using the updated search_id to get the canonical response.
-    if (data?.search_id && data.search_id !== endpoint) {
-      console.log(
-        `🔄 search_id changed: ${endpoint} → ${data.search_id}. Re-fetching...`,
+    if (response.status === 308) {
+      const location = response.headers.get("location");
+      const redirectUrl = location || await response.json().then(
+        (body) => {
+          const newKey = body?.search_id || body?.new_search_id;
+          return newKey
+            ? `https://groww.in/v1/api/data/mf/web/v4/scheme/search/${newKey}`
+            : null;
+        },
+        () => null,
       );
-      const updatedUrl =
-        "https://groww.in/v1/api/data/mf/web/v4/scheme/search/" +
-        data.search_id;
-      const updatedResponse = await fetch(updatedUrl);
-      if (!updatedResponse.ok)
-        throw new Error(`HTTP error! ${updatedResponse.status}`);
-      return await updatedResponse.json();
+
+      if (!redirectUrl) {
+        console.error(`308 for ${endpoint}: no redirect target found`);
+        return null;
+      }
+
+      const newKey = redirectUrl.split("/").pop();
+      console.log(`🔄 search_key redirected: ${endpoint} → ${newKey}`);
+      const redirected = await fetch(redirectUrl);
+      if (!redirected.ok) throw new Error(`HTTP error! ${redirected.status}`);
+      const data = await redirected.json();
+      if (!data.search_id) data.search_id = newKey;
+      return data;
     }
 
-    return data;
+    if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+    return await response.json();
   } catch (err) {
     console.error("Error fetching MF details:", err);
     return null;
