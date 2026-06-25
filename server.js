@@ -142,15 +142,17 @@ async function getMFDetails(endpoint) {
 
     if (response.status === 308) {
       const location = response.headers.get("location");
-      const redirectUrl = location || await response.json().then(
-        (body) => {
-          const newKey = body?.search_id || body?.new_search_id;
-          return newKey
-            ? `https://groww.in/v1/api/data/mf/web/v4/scheme/search/${newKey}`
-            : null;
-        },
-        () => null,
-      );
+      const redirectUrl =
+        location ||
+        (await response.json().then(
+          (body) => {
+            const newKey = body?.search_id || body?.new_search_id;
+            return newKey
+              ? `https://groww.in/v1/api/data/mf/web/v4/scheme/search/${newKey}`
+              : null;
+          },
+          () => null,
+        ));
 
       if (!redirectUrl) {
         console.error(`308 for ${endpoint}: no redirect target found`);
@@ -186,6 +188,25 @@ async function getFundStats(schemeCode) {
   }
 }
 
+async function getSimilarSchemes(category, subCategory, planType, schemeType) {
+  const params = new URLSearchParams({
+    category,
+    plan_type: planType,
+    sub_category: subCategory,
+    type: schemeType,
+    count: 20,
+  });
+  const url = `https://groww.in/v1/api/data/mf/web/v1/similar/scheme/top?${params}`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+    return await response.json();
+  } catch (err) {
+    console.error("Error fetching similar schemes:", err);
+    return [];
+  }
+}
+
 async function getFundNAVHistory(schemeCode) {
   const url = `https://api.mfapi.in/mf/${schemeCode}`;
   try {
@@ -204,11 +225,27 @@ async function getFundDetails(searchKey) {
     const mfData = await getMFDetails(searchKey);
     if (!mfData || !mfData.scheme_code) return null;
 
-    // Run stats + NAV history concurrently — both only need scheme_code
-    const [stats, navHistory] = await Promise.all([
+    const [stats, navHistory, similarSchemes] = await Promise.all([
       getFundStats(mfData.scheme_code),
       getFundNAVHistory(mfData.scheme_code),
+      getSimilarSchemes(
+        mfData.category,
+        mfData.sub_category,
+        mfData.plan_type,
+        mfData.scheme_type,
+      ),
     ]);
+
+    const peerDetails = await Promise.all(
+      (similarSchemes || []).map((peer) => getMFDetails(peer.search_id)),
+    );
+    const peersWithHistory = (similarSchemes || []).map((peer, i) => ({
+      ...peer,
+      amc: peerDetails[i]?.amc_info?.name || "",
+      isin: peerDetails[i]?.isin || "",
+      return_stats: peerDetails[i]?.return_stats?.[0] || {},
+      expense_ratio_history: peerDetails[i]?.historic_fund_expense || [],
+    }));
 
     return {
       amc: mfData.amc_info.name,
@@ -236,6 +273,7 @@ async function getFundDetails(searchKey) {
       tax_impact: mfData.category_info?.tax_impact,
       holdings: mfData.holdings || [],
       expense_ratio: mfData.expense_ratio,
+      expense_ratio_history: mfData.historic_fund_expense,
       portfolio_turnover: mfData.portfolio_turnover,
       aum: mfData.aum,
       groww_rating: mfData.groww_rating,
@@ -250,6 +288,7 @@ async function getFundDetails(searchKey) {
       benchmark: mfData?.benchmark || "",
       rta: mfData.rta_details?.rta_name,
       manager: mfData.fund_manager,
+      similar_schemes: peersWithHistory,
     };
   } catch (err) {
     console.error("Error fetching fund details:", err);
