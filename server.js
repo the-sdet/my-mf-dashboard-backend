@@ -194,7 +194,7 @@ async function getSimilarSchemes(category, subCategory, planType, schemeType) {
     plan_type: planType,
     sub_category: subCategory,
     type: schemeType,
-    count: 20,
+    count: 10,
   });
   const url = `https://groww.in/v1/api/data/mf/web/v1/similar/scheme/top?${params}`;
   try {
@@ -220,75 +220,65 @@ async function getFundNAVHistory(schemeCode) {
   }
 }
 
+function _buildFundBase(mfData) {
+  return {
+    amc: mfData.amc_info.name,
+    logo_url: mfData.logo_url,
+    launch_date: mfData.launch_date,
+    scheme_name: mfData.scheme_name,
+    scheme_code: mfData.scheme_code,
+    meta_desc: mfData.meta_desc,
+    plan_type: mfData.plan_type,
+    scheme_type: mfData.scheme_type,
+    isin: mfData.isin,
+    search_id: mfData.search_id,
+    category: mfData.category,
+    sub_category: mfData.sub_category,
+    second_category: mfData.category_info?.category,
+    second_category_sub_type: mfData.category_info?.sub_type,
+    category_helper_text: mfData.category_info?.category_helper_text,
+    exit_load: mfData.exit_load,
+    min_sip: mfData.min_sip_investment,
+    min_first_investment: mfData.min_investment_amount,
+    min_second_investment: mfData.mini_additional_investment,
+    available_for_investment: mfData.available_for_investment,
+    min_swp: mfData.swp_details?.swp_minimum_installment_amount,
+    min_stp: mfData.stp_details?.stp_in_minimum_installment_amount,
+    tax_impact: mfData.category_info?.tax_impact,
+    holdings: mfData.holdings || [],
+    expense_ratio: mfData.expense_ratio,
+    expense_ratio_history: mfData.historic_fund_expense,
+    portfolio_turnover: mfData.portfolio_turnover,
+    aum: mfData.aum,
+    groww_rating: mfData.groww_rating,
+    return_stats: mfData.return_stats?.[0] || {},
+    sip_return: mfData?.sip_return || {},
+    simple_return: mfData?.simple_return || {},
+    benchmark: mfData?.benchmark || "",
+    rta: mfData.rta_details?.rta_name,
+    manager: mfData.fund_manager,
+  };
+}
+
+// Full fetch: stats + NAV history. Peers are loaded separately via /api/mf-peers.
 async function getFundDetails(searchKey) {
   try {
     const mfData = await getMFDetails(searchKey);
     if (!mfData || !mfData.scheme_code) return null;
 
-    const [stats, navHistory, similarSchemes] = await Promise.all([
+    const [stats, navHistory] = await Promise.all([
       getFundStats(mfData.scheme_code),
       getFundNAVHistory(mfData.scheme_code),
-      getSimilarSchemes(
-        mfData.category,
-        mfData.sub_category,
-        mfData.plan_type,
-        mfData.scheme_type,
-      ),
     ]);
 
-    const peerDetails = await Promise.all(
-      (similarSchemes || []).map((peer) => getMFDetails(peer.search_id)),
-    );
-    const peersWithHistory = (similarSchemes || []).map((peer, i) => ({
-      ...peer,
-      amc: peerDetails[i]?.amc_info?.name || "",
-      isin: peerDetails[i]?.isin || "",
-      return_stats: peerDetails[i]?.return_stats?.[0] || {},
-      expense_ratio_history: peerDetails[i]?.historic_fund_expense || [],
-    }));
-
     return {
-      amc: mfData.amc_info.name,
-      logo_url: mfData.logo_url,
-      launch_date: mfData.launch_date,
-      scheme_name: mfData.scheme_name,
-      scheme_code: mfData.scheme_code,
-      meta_desc: mfData.meta_desc,
-      plan_type: mfData.plan_type,
-      scheme_type: mfData.scheme_type,
-      isin: mfData.isin,
-      search_id: mfData.search_id,
-      category: mfData.category,
-      sub_category: mfData.sub_category,
-      second_category: mfData.category_info?.category,
-      second_category_sub_type: mfData.category_info?.sub_type,
-      category_helper_text: mfData.category_info?.category_helper_text,
-      exit_load: mfData.exit_load,
-      min_sip: mfData.min_sip_investment,
-      min_first_investment: mfData.min_investment_amount,
-      min_second_investment: mfData.mini_additional_investment,
-      available_for_investment: mfData.available_for_investment,
-      min_swp: mfData.swp_details?.swp_minimum_installment_amount,
-      min_stp: mfData.stp_details?.stp_in_minimum_installment_amount,
-      tax_impact: mfData.category_info?.tax_impact,
-      holdings: mfData.holdings || [],
-      expense_ratio: mfData.expense_ratio,
-      expense_ratio_history: mfData.historic_fund_expense,
-      portfolio_turnover: mfData.portfolio_turnover,
-      aum: mfData.aum,
-      groww_rating: mfData.groww_rating,
-      return_stats: mfData.return_stats?.[0] || {},
-      sip_return: mfData?.sip_return || {},
-      simple_return: mfData?.simple_return || {},
+      ..._buildFundBase(mfData),
       portfolio_stats: stats || {},
       latest_nav: navHistory?.data?.[0]?.nav || 0,
       latest_nav_date: navHistory?.data?.[0]?.date || 0,
       nav_history: navHistory?.data || [],
       meta: navHistory?.meta || {},
-      benchmark: mfData?.benchmark || "",
-      rta: mfData.rta_details?.rta_name,
-      manager: mfData.fund_manager,
-      similar_schemes: peersWithHistory,
+      similar_schemes: [],
     };
   } catch (err) {
     console.error("Error fetching fund details:", err);
@@ -296,20 +286,53 @@ async function getFundDetails(searchKey) {
   }
 }
 
-async function fetchMFStats(searchKeys) {
+// Light fetch for past/redeemed holdings: metadata + optional NAV history. No stats or peers.
+async function getFundDetailsLight(searchKey, includeNav = false) {
+  try {
+    const mfData = await getMFDetails(searchKey);
+    if (!mfData || !mfData.scheme_code) return null;
+
+    const navHistory = includeNav
+      ? await getFundNAVHistory(mfData.scheme_code)
+      : null;
+
+    return {
+      ..._buildFundBase(mfData),
+      portfolio_stats: {},
+      latest_nav: navHistory?.data?.[0]?.nav || null,
+      latest_nav_date: navHistory?.data?.[0]?.date || null,
+      nav_history: navHistory?.data || [],
+      meta: navHistory?.meta || {},
+      similar_schemes: [],
+      _is_past: true,
+    };
+  } catch (err) {
+    console.error("Error fetching light fund details:", err);
+    return null;
+  }
+}
+
+async function fetchMFStats(
+  searchKeys,
+  lightSearchKeys = [],
+  lightIncludeNav = false,
+) {
   try {
     const allFunds = {};
     const CONCURRENCY = 10;
 
-    const tasks = searchKeys.map(
-      (searchKey) => () => getFundDetails(searchKey),
+    const activeTasks = searchKeys.map((sk) => () => getFundDetails(sk));
+    const lightTasks = lightSearchKeys.map(
+      (sk) => () => getFundDetailsLight(sk, lightIncludeNav),
     );
-    const results = await pLimit(tasks, CONCURRENCY);
 
-    results.forEach((fundDetails) => {
-      if (fundDetails && fundDetails.isin) {
-        allFunds[fundDetails.isin] = fundDetails;
-      }
+    const [activeResults, lightResults] = await Promise.all([
+      pLimit(activeTasks, CONCURRENCY),
+      pLimit(lightTasks, CONCURRENCY),
+    ]);
+
+    [...activeResults, ...lightResults].forEach((fd) => {
+      if (fd && fd.isin) allFunds[fd.isin] = fd;
     });
 
     return allFunds;
@@ -319,7 +342,6 @@ async function fetchMFStats(searchKeys) {
   }
 }
 
-// Core-only fetch: just Groww search + mfapi NAV history (no portfolio stats)
 // -------------------- API ENDPOINTS --------------------
 app.post("/api/parse-cas", upload.single("file"), async (req, res) => {
   const filePath = req.file.path;
@@ -354,23 +376,79 @@ app.post("/api/parse-cas", upload.single("file"), async (req, res) => {
 
 app.post("/api/mf-stats", async (req, res) => {
   try {
-    const { searchKeys } = req.body;
+    const {
+      searchKeys,
+      lightSearchKeys = [],
+      lightIncludeNav = false,
+    } = req.body;
 
-    if (!searchKeys || typeof searchKeys !== "object") {
+    if (!searchKeys || !Array.isArray(searchKeys)) {
       return res
         .status(400)
-        .json({ success: false, error: "searchKeys required" });
+        .json({ success: false, error: "searchKeys array required" });
     }
 
-    const data = await fetchMFStats(searchKeys);
+    const data = await fetchMFStats(
+      searchKeys,
+      lightSearchKeys,
+      lightIncludeNav,
+    );
 
     res.json({
       success: true,
-      message: `Fetched stats for ${searchKeys.length} ISINs`,
+      message: `Fetched stats for ${searchKeys.length} active + ${lightSearchKeys.length} past funds`,
       data,
     });
   } catch (err) {
     console.error("Error fetching MF stats:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/mf-peers", async (req, res) => {
+  try {
+    const { funds } = req.body;
+    // funds: [{ isin, category, sub_category, plan_type, scheme_type }]
+    if (!funds || !Array.isArray(funds) || funds.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, error: "funds array required" });
+    }
+
+    const CONCURRENCY = 5;
+    const tasks = funds.map((fund) => async () => {
+      const schemes = await getSimilarSchemes(
+        fund.category,
+        fund.sub_category,
+        fund.plan_type,
+        fund.scheme_type,
+      );
+      const peerDetails = await Promise.all(
+        (schemes || []).map((peer) => getMFDetails(peer.search_id)),
+      );
+      const peers = (schemes || []).map((peer, i) => ({
+        ...peer,
+        amc: peerDetails[i]?.amc_info?.name || "",
+        isin: peerDetails[i]?.isin || "",
+        return_stats: peerDetails[i]?.return_stats?.[0] || {},
+        expense_ratio_history: peerDetails[i]?.historic_fund_expense || [],
+      }));
+      return { isin: fund.isin, peers };
+    });
+
+    const results = await pLimit(tasks, CONCURRENCY);
+    const data = {};
+    results.forEach((r) => {
+      if (r) data[r.isin] = r.peers;
+    });
+
+    res.json({
+      success: true,
+      message: `Fetched peers for ${Object.keys(data).length} funds`,
+      data,
+    });
+  } catch (err) {
+    console.error("Error fetching MF peers:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

@@ -83,10 +83,13 @@ Returns server status and available endpoints.
   "endpoints": [
     "POST /api/parse-cas",
     "POST /api/mf-stats",
+    "POST /api/mf-peers",
     "POST /api/update-nav-only"
   ]
 }
 ```
+
+---
 
 ### Parse CAS Statement
 
@@ -94,14 +97,14 @@ Returns server status and available endpoints.
 POST /api/parse-cas
 ```
 
-Upload and parse a CAS PDF file.
+Upload and parse a password-protected CAS PDF from CAMS or KFintech.
 
-**Request:**
+**Request:** `multipart/form-data`
 
-- Content-Type: `multipart/form-data`
-- Body:
-  - `file`: PDF file (required)
-  - `password`: PDF password (optional)
+| Field      | Type   | Required | Description               |
+| ---------- | ------ | -------- | ------------------------- |
+| `file`     | File   | Yes      | CAS PDF file              |
+| `password` | String | No       | PDF password if protected |
 
 **Response:**
 
@@ -110,22 +113,46 @@ Upload and parse a CAS PDF file.
   "success": true,
   "message": "CAS parsed successfully",
   "data": {
-    "statement_period": {
-      "from": "2024-01-01",
-      "to": "2024-12-31"
-    },
+    "statement_period": { "from": "01-Apr-2024", "to": "25-Jun-2025" },
     "file_type": "CAMS",
     "cas_type": "DETAILED",
     "investor_info": {
-      "email": "investor@example.com",
       "name": "John Doe",
+      "email": "investor@example.com",
       "mobile": "+919876543210",
       "address": "123 Street, City"
     },
-    "folios": [...]
+    "folios": [
+      {
+        "folio": "1234567/89",
+        "amc": "HDFC Mutual Fund",
+        "pan": "ABCDE1234F",
+        "schemes": [
+          {
+            "scheme": "HDFC Mid-Cap Opportunities Fund - Direct Plan - Growth",
+            "isin": "INF179KB1HD7",
+            "open": 100.234,
+            "close": 150.891,
+            "transactions": [
+              {
+                "date": "2024-06-15",
+                "type": "PURCHASE",
+                "amount": 5000.0,
+                "units": 12.345,
+                "nav": 405.12,
+                "balance": 150.891,
+                "description": "SIP"
+              }
+            ]
+          }
+        ]
+      }
+    ]
   }
 }
 ```
+
+---
 
 ### Fetch MF Statistics
 
@@ -133,57 +160,192 @@ Upload and parse a CAS PDF file.
 POST /api/mf-stats
 ```
 
-Get comprehensive statistics for multiple mutual funds in a single call. Fetches Groww metadata, full NAV history, and portfolio stats concurrently per fund (up to 10 funds in parallel) and returns everything in one blocking response — no phased loading.
+Fetch full fund metadata, NAV history, and portfolio stats for a list of funds. Supports a two-tier fetch: `searchKeys` for active holdings (full data including NAV history) and `lightSearchKeys` for past/redeemed holdings (metadata only, NAV history optional). Both lists are fetched concurrently with up to 10 parallel workers each.
 
 **Request:**
 
+| Field             | Type     | Required | Description                                                                |
+| ----------------- | -------- | -------- | -------------------------------------------------------------------------- |
+| `searchKeys`      | String[] | Yes      | Groww search IDs for active holdings — full fetch (metadata + stats + NAV) |
+| `lightSearchKeys` | String[] | No       | Groww search IDs for past holdings — light fetch (metadata only)           |
+| `lightIncludeNav` | Boolean  | No       | Whether to include NAV history for light keys. Default: `false`            |
+
 ```json
 {
-  "searchKeys": ["fund-name-1", "fund-name-2"]
+  "searchKeys": ["motilal-oswal-midcap-fund-direct-plan-growth"],
+  "lightSearchKeys": ["hdfc-equity-fund-direct-plan-growth"],
+  "lightIncludeNav": true
 }
 ```
 
 **Response:**
 
+The `data` object is keyed by ISIN. Active fund objects include full portfolio stats and NAV history; past fund objects (`_is_past: true`) include only metadata.
+
 ```json
 {
   "success": true,
-  "message": "Fetched stats for 2 ISINs",
+  "message": "Fetched stats for 1 active + 1 past funds",
   "data": {
-    "INF123456789": {
+    "INF247L01052": {
+      "isin": "INF247L01052",
+      "scheme_name": "Motilal Oswal Midcap Fund Direct Growth",
+      "scheme_code": "151278",
+      "amc": "Motilal Oswal Mutual Fund",
+      "logo_url": "https://...",
+      "plan_type": "DIRECT",
+      "scheme_type": "EQUITY",
+      "category": "Equity",
+      "sub_category": "Mid Cap",
+      "expense_ratio": 0.58,
+      "expense_ratio_history": [
+        { "date": "2024-04-01", "expense_ratio": 0.58 }
+      ],
+      "aum": 36458,
+      "groww_rating": 3,
+      "return_stats": {
+        "return1y": -7.6,
+        "return3y": 18.9,
+        "return5y": 31.2,
+        "risk_rating": 6,
+        "cat_return3y": 22.1
+      },
+      "sip_return": { "return1y": -4.2, "return3y": 16.5 },
+      "simple_return": { "return1y": -7.6 },
+      "holdings": [{ "company_name": "Kalyan Jewellers", "percentage": 6.5 }],
+      "portfolio_stats": { "risk": "Very High", "pe": 43.75 },
+      "portfolio_turnover": 0.35,
+      "benchmark": "Nifty Midcap 150 TRI",
+      "latest_nav": 101.23,
+      "latest_nav_date": "24-Jun-2025",
+      "nav_history": [
+        { "date": "24-Jun-2025", "nav": "101.2300" },
+        { "date": "23-Jun-2025", "nav": "100.8900" }
+      ],
+      "meta": {
+        "fund_house": "Motilal Oswal Mutual Fund",
+        "scheme_type": "Open Ended"
+      },
+      "similar_schemes": []
+    },
+    "INF179KB1HD7": {
+      "isin": "INF179KB1HD7",
+      "scheme_name": "HDFC Mid-Cap Opportunities Fund Direct Plan Growth",
+      "scheme_code": "119062",
       "amc": "HDFC Mutual Fund",
-      "scheme_name": "HDFC Equity Fund",
-      "scheme_code": "119551",
-      "latest_nav": 845.32,
-      "latest_nav_date": "27-Oct-2024",
-      "expense_ratio": 1.85,
-      "aum": 15000,
-      "return_stats": {...},
-      "sip_return": {...},
-      "holdings": [...],
-      "portfolio_stats": {...},
-      "nav_history": [...]
+      "_is_past": true,
+      "return_stats": {},
+      "portfolio_stats": {},
+      "nav_history": [],
+      "similar_schemes": []
     }
   }
 }
 ```
 
-### Update NAV Data
+---
+
+### Fetch Peer Funds
+
+```http
+POST /api/mf-peers
+```
+
+Fetch similar/peer funds for a list of funds, grouped by ISIN. Used as a background Phase 2 load after the initial dashboard render. Each fund's peers are sourced from Groww's similar schemes endpoint, then enriched with individual fund metadata (ISIN, AMC, return stats, expense ratio history).
+
+**Request:**
+
+| Field   | Type  | Required | Description                                 |
+| ------- | ----- | -------- | ------------------------------------------- |
+| `funds` | Array | Yes      | List of fund descriptors to fetch peers for |
+
+Each item in `funds`:
+
+| Field          | Type   | Description                      |
+| -------------- | ------ | -------------------------------- |
+| `isin`         | String | Fund ISIN (used as response key) |
+| `category`     | String | e.g. `"Equity"`                  |
+| `sub_category` | String | e.g. `"Mid Cap"`                 |
+| `plan_type`    | String | `"DIRECT"` or `"REGULAR"`        |
+| `scheme_type`  | String | e.g. `"EQUITY"`                  |
+
+```json
+{
+  "funds": [
+    {
+      "isin": "INF247L01052",
+      "category": "Equity",
+      "sub_category": "Mid Cap",
+      "plan_type": "DIRECT",
+      "scheme_type": "EQUITY"
+    }
+  ]
+}
+```
+
+**Response:**
+
+The `data` object is keyed by the input ISIN. Each value is an array of peer fund objects.
+
+```json
+{
+  "success": true,
+  "message": "Fetched peers for 1 funds",
+  "data": {
+    "INF247L01052": [
+      {
+        "search_id": "invesco-india-mid-cap-fund-direct-plan-growth",
+        "scheme_name": "Invesco India Mid Cap Fund Direct Growth",
+        "fund_house": "Invesco Mutual Fund",
+        "isin": "INF205K01EV2",
+        "amc": "Invesco Asset Management",
+        "logo_url": "https://...",
+        "return1y": 10.7,
+        "return3y": 27.0,
+        "expense_ratio": 0.58,
+        "aum": 12397,
+        "groww_rating": 4,
+        "risk": "Very High",
+        "return_stats": {
+          "return1y": 10.7,
+          "return3y": 27.0,
+          "risk_rating": 6
+        },
+        "expense_ratio_history": [
+          { "date": "2024-04-01", "expense_ratio": 0.58 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+---
+
+### Update NAV Only
 
 ```http
 POST /api/update-nav-only
 ```
 
-Fetch only the latest NAV updates for existing funds.
+Fetch only the latest NAV entries for a set of active holdings. Used for daily NAV refresh without re-fetching full fund metadata. Only returns entries newer than `last_nav_date` per fund; if `last_nav_date` is absent, the full NAV history is returned.
 
 **Request:**
+
+| Field           | Type   | Required | Description                                    |
+| --------------- | ------ | -------- | ---------------------------------------------- |
+| `navUpdateData` | Object | Yes      | Map of ISIN → `{ scheme_code, last_nav_date }` |
 
 ```json
 {
   "navUpdateData": {
-    "INF123456789": {
-      "scheme_code": "119551",
-      "last_nav_date": "2024-10-20"
+    "INF247L01052": {
+      "scheme_code": "151278",
+      "last_nav_date": "20-Jun-2025"
+    },
+    "INF179KB1HD7": {
+      "scheme_code": "119062",
+      "last_nav_date": null
     }
   }
 }
@@ -191,17 +353,32 @@ Fetch only the latest NAV updates for existing funds.
 
 **Response:**
 
+Only ISINs that have new NAV entries (newer than `last_nav_date`) are included in `data`.
+
 ```json
 {
   "success": true,
-  "message": "Found NAV data for 1 out of 1 funds",
+  "message": "Found NAV data for 2 out of 2 funds",
   "data": {
-    "INF123456789": {
-      "latest_nav": 845.32,
-      "latest_nav_date": "27-Oct-2024",
-      "nav_entries": [...],
+    "INF247L01052": {
+      "latest_nav": "101.2300",
+      "latest_nav_date": "24-Jun-2025",
+      "nav_entries": [
+        { "date": "24-Jun-2025", "nav": "101.2300" },
+        { "date": "23-Jun-2025", "nav": "100.8900" }
+      ],
       "is_full_history": false,
-      "meta": {...}
+      "meta": {
+        "fund_house": "Motilal Oswal Mutual Fund",
+        "scheme_type": "Open Ended"
+      }
+    },
+    "INF179KB1HD7": {
+      "latest_nav": "178.5600",
+      "latest_nav_date": "24-Jun-2025",
+      "nav_entries": [{ "date": "24-Jun-2025", "nav": "178.5600" }],
+      "is_full_history": true,
+      "meta": { "fund_house": "HDFC Mutual Fund", "scheme_type": "Open Ended" }
     }
   }
 }
@@ -219,12 +396,44 @@ curl -X POST http://localhost:3000/api/parse-cas \
   -F "password=yourpassword"
 ```
 
-**Fetch Fund Stats:**
+**Fetch Fund Stats (active + past holdings):**
 
 ```bash
 curl -X POST http://localhost:3000/api/mf-stats \
   -H "Content-Type: application/json" \
-  -d '{"searchKeys": ["hdfc-equity-fund", "icici-bluechip"]}'
+  -d '{
+    "searchKeys": ["motilal-oswal-midcap-fund-direct-plan-growth"],
+    "lightSearchKeys": ["hdfc-equity-fund-direct-plan-growth"],
+    "lightIncludeNav": true
+  }'
+```
+
+**Fetch Peer Funds:**
+
+```bash
+curl -X POST http://localhost:3000/api/mf-peers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "funds": [{
+      "isin": "INF247L01052",
+      "category": "Equity",
+      "sub_category": "Mid Cap",
+      "plan_type": "DIRECT",
+      "scheme_type": "EQUITY"
+    }]
+  }'
+```
+
+**Update NAV only:**
+
+```bash
+curl -X POST http://localhost:3000/api/update-nav-only \
+  -H "Content-Type: application/json" \
+  -d '{
+    "navUpdateData": {
+      "INF247L01052": { "scheme_code": "151278", "last_nav_date": "20-Jun-2025" }
+    }
+  }'
 ```
 
 ### Using JavaScript (Fetch API)
@@ -293,7 +502,7 @@ Update allowed origins in `server.js`:
 app.use(
   cors({
     origin: ["https://your-frontend-domain.com", "http://localhost:5500"],
-  })
+  }),
 );
 ```
 
@@ -348,7 +557,6 @@ This backend is configured for easy deployment on [Render](https://render.com).
 3. Connect your GitHub repository
 
 4. Configure the service:
-
    - **Name**: `my-mf-dashboard-backend`
    - **Environment**: `Node`
    - **Build Command**: `npm install`
@@ -356,7 +564,6 @@ This backend is configured for easy deployment on [Render](https://render.com).
    - **Instance Type**: Free (or as per your needs)
 
 5. Add Environment Variables (optional):
-
    - `PORT`: 3000 (Render sets this automatically)
 
 6. Click **Create Web Service**

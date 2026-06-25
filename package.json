@@ -1,6 +1,6 @@
 {
   "name": "my-mf-dashboard-backend",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "description": "MF CAS Parser and Backend APIs for Mutual Fund Dashboard - fetches and aggregates MF data.",
   "main": "server.js",
   "type": "module",
