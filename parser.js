@@ -330,10 +330,10 @@ function parseLineByLine(text) {
     kyc: /KYC:\s*(OK|NOT\s*OK)(?!\d)/,
     pankyc: /PAN:\s*(OK|NOT\s*OK)(?!\s*[A-Z]{5})/,
     panLine: /PAN:\s*[A-Z0-9]+/,
-    openingBalance: /Opening Unit Balance:\s*([\d.]+)/,
+    openingBalance: /Opening Unit Balance:\s*([\d,.]+)/,
     closingBalance: /Closing Unit Balance:\s*([\d,]+(?:\.\d+)?)/,
     costValue: /Total Cost Value:\s*([\d,]+(?:\.\d+)?)/,
-    nav: /NAV on (\d{2}-[A-Z][a-z]{2}-\d{4}):\s*INR\s*([\d.]+)/,
+    nav: /NAV on (\d{2}-[A-Z][a-z]{2}-\d{4}):\s*INR\s*([\d,.]+)/,
     marketValue: /Market Value on \d{2}-[A-Z][a-z]{2}-\d{4}:\s*INR\s*([\d,.]+)/,
   };
 
@@ -488,7 +488,7 @@ function parseLineByLine(text) {
     if (currentScheme && line.includes("Opening Unit Balance:")) {
       const match = line.match(PATTERNS.openingBalance);
       if (match) {
-        currentScheme.open = parseFloat(match[1]);
+        currentScheme.open = parseFloat(match[1].replace(/,/g, ""));
         collectingTransactions = true;
       }
       continue;
@@ -530,7 +530,7 @@ function parseLineByLine(text) {
       const navMatch = line.match(PATTERNS.nav);
       if (navMatch) {
         currentScheme.valuation.date = convertDate(navMatch[1]);
-        currentScheme.valuation.nav = parseFloat(navMatch[2]);
+        currentScheme.valuation.nav = parseFloat(navMatch[2].replace(/,/g, ""));
       }
 
       const valueMatch = line.match(PATTERNS.marketValue);
