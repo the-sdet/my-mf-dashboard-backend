@@ -637,9 +637,12 @@ app.get("/api/benchmark-returns", async (req, res) => {
       data[slug] = entry;
     }
 
+    const unknownSlugs = requestedNames.filter((s) => !data[s]);
+
     res.json({
       success: true,
       count: Object.keys(data).length,
+      ...(unknownSlugs.length > 0 && { unknown: unknownSlugs }),
       data,
     });
   } catch (err) {
@@ -647,6 +650,23 @@ app.get("/api/benchmark-returns", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+const SCHEME_SLUG_MAP = {
+  "nifty-50-tri":                "NIFTY 50 TRI",
+  "cnx-nifty":                   "CNX Nifty",
+  "nifty-next-50-tri":           "Nifty Next 50 TRI",
+  "nifty-100-tri":               "NIFTY 100 TRI",
+  "nifty-200-tri":               "NIFTY 200 TRI",
+  "nifty-500-tri":               "NIFTY 500 TRI",
+  "s-and-p-bse-sensex":          "S&P BSE Sensex",
+  "nifty-large-midcap-250-tri":  "NIFTY LARGE MIDCAP 250 TRI",
+  "nifty-smallcap-250-tri":      "NIFTY SMALLCAP 250 TRI",
+  "nifty-midcap-150-tri":        "NIFTY MIDCAP 150 TRI",
+  "nifty-midcap-100-tri":        "NIFTY MIDCAP 100 TRI",
+  "domestic-price-of-gold":      "Domestic Price of Gold",
+  "domestic-price-of-silver":    "Domestic Price of Silver",
+  "nifty-50-arbitrage-index":    "Nifty 50 Arbitrage Index",
+};
 
 const ROLLING_VALID_PERIODS = [
   "1 Month", "1 Year", "2 Year", "3 Year",
@@ -756,25 +776,34 @@ async function fetchRollingReturnsForPeriod(scheme, period, start_date) {
 /**
  * GET /api/benchmark-rolling-returns
  *
- * Returns rolling return distribution stats for a single benchmark and period.
+ * Returns rolling return distribution stats for one or more benchmarks for a given period.
  * The resolved period and start_date in the response are always extracted from
  * the upstream HTML, not echoed from caller input.
  *
- * @query {string} scheme      - Required. Benchmark name (e.g. "NIFTY 50 TRI").
+ * @query {string} [names]     - Comma-separated benchmark slugs (e.g. "nifty-50-tri,cnx-nifty").
+ *   Takes precedence over `scheme`. Valid slugs are keys of SCHEME_SLUG_MAP.
+ * @query {string} [scheme]    - Single benchmark name (e.g. "NIFTY 50 TRI"). Kept for backward compat.
  * @query {string} [period]    - Rolling period. Valid: "1 Month" | "1 Year" | "2 Year" |
  *   "3 Year" | "5 Year" | "7 Year" | "10 Year" | "15 Year". Omit for upstream default.
  * @query {string} [start_date] - Analysis start date (DD-MM-YYYY). Omit for upstream default.
  *
- * @returns {object} scheme, period (slug), start_date, data (average, median, maximum,
- *   minimum, std_deviation, distribution buckets as percentages)
+ * @returns When multiple names: object keyed by slug, each with scheme, period, start_date, data.
+ *   When single scheme: flat response with scheme, period (slug), start_date, data.
  */
 app.get("/api/benchmark-rolling-returns", async (req, res) => {
   const { scheme, period, start_date } = req.query;
 
-  if (!scheme) {
+  const slugs = req.query.names
+    ? req.query.names.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+    : [];
+
+  const invalidSlugs = slugs.filter((s) => !SCHEME_SLUG_MAP[s]);
+  const validSlugs = slugs.filter((s) => SCHEME_SLUG_MAP[s]);
+
+  if (validSlugs.length === 0 && !scheme) {
     return res
       .status(400)
-      .json({ success: false, error: "scheme query param is required" });
+      .json({ success: false, error: "names or scheme query param is required" });
   }
 
   if (period && !ROLLING_VALID_PERIODS.includes(period)) {
@@ -785,15 +814,29 @@ app.get("/api/benchmark-rolling-returns", async (req, res) => {
   }
 
   try {
-    const result = await fetchRollingReturnsForPeriod(scheme, period, start_date);
+    if (slugs.length > 0) {
+      const results = await Promise.all(
+        validSlugs.map((slug) =>
+          fetchRollingReturnsForPeriod(SCHEME_SLUG_MAP[slug], period, start_date).catch(() => null),
+        ),
+      );
+      const data = {};
+      validSlugs.forEach((slug, i) => { data[slug] = results[i] || null; });
+      return res.json({
+        success: true,
+        count: validSlugs.length,
+        ...(invalidSlugs.length > 0 && { unknown: invalidSlugs }),
+        data,
+      });
+    }
 
+    const result = await fetchRollingReturnsForPeriod(scheme, period, start_date);
     if (!result) {
       return res.status(404).json({
         success: false,
         error: "No data found — check scheme name, period, and start_date",
       });
     }
-
     res.json({ success: true, ...result });
   } catch (err) {
     console.error("Error fetching benchmark rolling returns:", err);
@@ -804,57 +847,82 @@ app.get("/api/benchmark-rolling-returns", async (req, res) => {
 /**
  * GET /api/benchmark-rolling-returns-all
  *
- * Concurrently fetches rolling return stats for all 8 periods and returns them
- * aggregated in a single response keyed by period slug.
+ * Concurrently fetches rolling return stats for all 8 periods for one or more benchmarks,
+ * returning results aggregated in a single response.
  * Periods with insufficient history or no data are returned as null rather than
  * failing the entire request.
  *
- * @query {string} scheme       - Required. Benchmark name (e.g. "NIFTY 50 TRI").
+ * @query {string} [names]      - Comma-separated benchmark slugs (e.g. "nifty-50-tri,cnx-nifty").
+ *   Takes precedence over `scheme`. Valid slugs are keys of SCHEME_SLUG_MAP.
+ * @query {string} [scheme]     - Single benchmark name (e.g. "NIFTY 50 TRI"). Kept for backward compat.
  * @query {string} [start_date] - Analysis start date (DD-MM-YYYY). Omit for upstream default.
  *
- * @returns {object} scheme name and data object keyed by period slug
- *   ("1m" | "1yr" | "2yr" | "3yr" | "5yr" | "7yr" | "10yr" | "15yr").
- *   Each entry contains start_date, average, median, maximum, minimum,
- *   std_deviation, and distribution bucket percentages, or null if unavailable.
+ * @returns When multiple names: object keyed by slug, each containing period-keyed data.
+ *   When single scheme: flat response with scheme name and period-keyed data.
+ *   Period keys: "1m" | "1yr" | "2yr" | "3yr" | "5yr" | "7yr" | "10yr" | "15yr"
  */
 app.get("/api/benchmark-rolling-returns-all", async (req, res) => {
   const { scheme, start_date } = req.query;
 
-  if (!scheme) {
+  const slugs = req.query.names
+    ? req.query.names.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+    : [];
+
+  const invalidSlugs = slugs.filter((s) => !SCHEME_SLUG_MAP[s]);
+  const validSlugs = slugs.filter((s) => SCHEME_SLUG_MAP[s]);
+
+  if (validSlugs.length === 0 && !scheme) {
     return res
       .status(400)
-      .json({ success: false, error: "scheme query param is required" });
+      .json({ success: false, error: "names or scheme query param is required" });
   }
 
+  const schemesToFetch = validSlugs.length > 0
+    ? validSlugs.map((slug) => ({ slug, name: SCHEME_SLUG_MAP[slug] }))
+    : [{ slug: null, name: scheme }];
+
   try {
-    const results = await Promise.all(
-      ROLLING_VALID_PERIODS.map((p) =>
-        fetchRollingReturnsForPeriod(scheme, p, start_date).catch(() => null),
+    const schemeResults = await Promise.all(
+      schemesToFetch.map(({ name }) =>
+        Promise.all(
+          ROLLING_VALID_PERIODS.map((p) =>
+            fetchRollingReturnsForPeriod(name, p, start_date).catch(() => null),
+          ),
+        ),
       ),
     );
 
-    const data = {};
-    let schemeName = null;
-    for (let i = 0; i < ROLLING_VALID_PERIODS.length; i++) {
-      const period = ROLLING_VALID_PERIODS[i];
-      const key = PERIOD_SLUG[period];
-      const result = results[i];
-      if (result) {
-        if (!schemeName) schemeName = result.scheme;
-        data[key] = {
-          start_date: result.start_date,
-          ...result.data,
-        };
-      } else {
-        data[key] = null;
+    const buildPeriodData = (results) => {
+      const data = {};
+      for (let i = 0; i < ROLLING_VALID_PERIODS.length; i++) {
+        const key = PERIOD_SLUG[ROLLING_VALID_PERIODS[i]];
+        const result = results[i];
+        data[key] = result
+          ? { start_date: result.start_date, ...result.data }
+          : null;
       }
+      return data;
+    };
+
+    if (slugs.length > 0) {
+      const data = {};
+      validSlugs.forEach((slug, i) => {
+        data[slug] = {
+          scheme: schemesToFetch[i].name,
+          data: buildPeriodData(schemeResults[i]),
+        };
+      });
+      return res.json({
+        success: true,
+        count: validSlugs.length,
+        ...(invalidSlugs.length > 0 && { unknown: invalidSlugs }),
+        data,
+      });
     }
 
-    res.json({
-      success: true,
-      scheme: schemeName || scheme,
-      data,
-    });
+    const results = schemeResults[0];
+    const schemeName = results.find(Boolean)?.scheme || scheme;
+    res.json({ success: true, scheme: schemeName, data: buildPeriodData(results) });
   } catch (err) {
     console.error("Error fetching all rolling returns:", err);
     res.status(500).json({ success: false, error: err.message });

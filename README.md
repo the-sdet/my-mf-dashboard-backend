@@ -452,6 +452,12 @@ Scrapes trailing return stats for all major market benchmark indices from Adviso
 
 Numeric fields are floats; a `"-"` from the source becomes `null`.
 
+Unknown slugs in `names` do not fail the request — valid ones are returned and unrecognised ones are listed in an `unknown` field:
+
+```json
+{ "success": true, "count": 1, "unknown": ["bse-sensex-foo"], "data": { "nifty-50-tri": { ... } } }
+```
+
 ---
 
 ### Benchmark Rolling Returns
@@ -498,6 +504,12 @@ Returns rolling return distribution stats for a single benchmark and period. The
 ```
 
 **Period slugs** in the response: `1m` · `1yr` · `2yr` · `3yr` · `5yr` · `7yr` · `10yr` · `15yr`
+
+Unknown slugs in `names` do not fail the request — valid ones are fetched and unrecognised ones are listed in an `unknown` field:
+
+```json
+{ "success": true, "count": 1, "unknown": ["foo-bar"], "data": { "nifty-50-tri": { ... } } }
+```
 
 ---
 
@@ -547,6 +559,12 @@ Fires requests for all 8 rolling periods concurrently and returns the results ag
     "15yr": null
   }
 }
+```
+
+Unknown slugs in `names` do not fail the request — valid ones are fetched and unrecognised ones are listed in an `unknown` field:
+
+```json
+{ "success": true, "count": 1, "unknown": ["foo-bar"], "data": { "nifty-50-tri": { ... } } }
 ```
 
 ---
