@@ -19,6 +19,14 @@ A powerful Express backend for parsing Mutual Fund Consolidated Account Statemen
 
 - [Installation](#installation)
 - [API Endpoints](#api-endpoints)
+  - [Health Check](#health-check)
+  - [Parse CAS Statement](#parse-cas-statement)
+  - [Fetch MF Statistics](#fetch-mf-statistics)
+  - [Fetch Peer Funds](#fetch-peer-funds)
+  - [Update NAV Only](#update-nav-only)
+  - [Benchmark Returns](#benchmark-returns)
+  - [Benchmark Rolling Returns](#benchmark-rolling-returns)
+  - [Benchmark Rolling Returns — All Periods](#benchmark-rolling-returns--all-periods)
 - [Usage Examples](#usage-examples)
 - [Data Sources](#data-sources)
 - [Supported AMCs](#supported-amcs)
@@ -83,8 +91,10 @@ Returns server status and available endpoints.
   "endpoints": [
     "POST /api/parse-cas",
     "POST /api/mf-stats",
-    "POST /api/mf-peers",
-    "POST /api/update-nav-only"
+    "POST /api/update-nav-only",
+    "GET /api/benchmark-returns",
+    "GET /api/benchmark-rolling-returns",
+    "GET /api/benchmark-rolling-returns-all"
   ]
 }
 ```
@@ -384,6 +394,163 @@ Only ISINs that have new NAV entries (newer than `last_nav_date`) are included i
 }
 ```
 
+---
+
+### Benchmark Returns
+
+```http
+GET /api/benchmark-returns
+GET /api/benchmark-returns?names=nifty-50-tri,bse-sensex
+```
+
+Scrapes trailing return stats for all major market benchmark indices from AdvisorKhoj. Optionally filter to specific benchmarks by passing a comma-separated list of slugs.
+
+**Query Parameters:**
+
+| Param   | Type   | Required | Description                                                                 |
+| ------- | ------ | -------- | --------------------------------------------------------------------------- |
+| `names` | String | No       | Comma-separated benchmark slugs to filter (e.g. `nifty-50-tri,bse-sensex`) |
+
+**Response:**
+
+`data` is an object keyed by benchmark slug. Returns all benchmarks when `names` is omitted.
+
+```json
+{
+  "success": true,
+  "count": 2,
+  "data": {
+    "nifty-50-tri": {
+      "name": "NIFTY 50 TRI",
+      "ret_1w": 0.85,
+      "ret_1m": 2.31,
+      "ret_3m": 5.12,
+      "ret_6m": 8.47,
+      "ret_ytd": 6.93,
+      "ret_1y": 14.2,
+      "ret_3y": 15.16,
+      "ret_5y": 15.45,
+      "ret_10y": 14.07,
+      "ret_since_launch": 13.5
+    },
+    "bse-sensex": {
+      "name": "BSE Sensex",
+      "ret_1w": 0.79,
+      "ret_1m": 2.15,
+      "ret_3m": 4.87,
+      "ret_6m": 8.1,
+      "ret_ytd": 6.5,
+      "ret_1y": 13.9,
+      "ret_3y": 14.8,
+      "ret_5y": 15.1,
+      "ret_10y": 13.7,
+      "ret_since_launch": 13.2
+    }
+  }
+}
+```
+
+Numeric fields are floats; a `"-"` from the source becomes `null`.
+
+---
+
+### Benchmark Rolling Returns
+
+```http
+GET /api/benchmark-rolling-returns?scheme=NIFTY%2050%20TRI
+GET /api/benchmark-rolling-returns?scheme=NIFTY%2050%20TRI&period=3%20Year&start_date=30-06-1999
+```
+
+Returns rolling return distribution stats for a single benchmark and period. The `period` and `start_date` in the response are always extracted from the upstream HTML — they reflect the upstream site's actual defaults, not the caller's input.
+
+**Query Parameters:**
+
+| Param        | Type   | Required | Description                                                                                                   |
+| ------------ | ------ | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `scheme`     | String | Yes      | Benchmark name as it appears on AdvisorKhoj (e.g. `NIFTY 50 TRI`)                                            |
+| `period`     | String | No       | Rolling period. Valid: `1 Month` `1 Year` `2 Year` `3 Year` `5 Year` `7 Year` `10 Year` `15 Year`            |
+| `start_date` | String | No       | Analysis start date in `DD-MM-YYYY` format. Omit to use the upstream default.                                 |
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "scheme": "NIFTY 50 TRI",
+  "period": "3yr",
+  "start_date": "30-06-1999",
+  "data": {
+    "average": 15.16,
+    "median": 13.45,
+    "maximum": 61.7,
+    "minimum": -15.22,
+    "std_deviation": 12.37,
+    "distribution": {
+      "pct_negative": 6.4,
+      "pct_0_8": 17.24,
+      "pct_8_12": 17.58,
+      "pct_12_15": 17.51,
+      "pct_15_20": 18.09,
+      "pct_gt_20": 23.17
+    }
+  }
+}
+```
+
+**Period slugs** in the response: `1m` · `1yr` · `2yr` · `3yr` · `5yr` · `7yr` · `10yr` · `15yr`
+
+---
+
+### Benchmark Rolling Returns — All Periods
+
+```http
+GET /api/benchmark-rolling-returns-all?scheme=NIFTY%2050%20TRI
+GET /api/benchmark-rolling-returns-all?scheme=NIFTY%2050%20TRI&start_date=30-06-1999
+```
+
+Fires requests for all 8 rolling periods concurrently and returns the results aggregated in a single response. Periods with insufficient history are returned as `null` rather than failing the request.
+
+**Query Parameters:**
+
+| Param        | Type   | Required | Description                                                   |
+| ------------ | ------ | -------- | ------------------------------------------------------------- |
+| `scheme`     | String | Yes      | Benchmark name (e.g. `NIFTY 50 TRI`)                         |
+| `start_date` | String | No       | Analysis start date in `DD-MM-YYYY`. Omit for upstream default |
+
+**Response:**
+
+`data` is keyed by period slug. Each entry includes `start_date` (as resolved by upstream), the five return stats, and the six distribution bucket percentages. A period with no data returns `null`.
+
+```json
+{
+  "success": true,
+  "scheme": "NIFTY 50 TRI",
+  "data": {
+    "1m": {
+      "start_date": "30-06-1999",
+      "average": 1.22,
+      "median": 1.43,
+      "maximum": 30.65,
+      "minimum": -37.88,
+      "std_deviation": 6.35,
+      "distribution": {
+        "pct_negative": 38.56,
+        "pct_0_8": 51.22,
+        "pct_8_12": 6.69,
+        "pct_12_15": 1.87,
+        "pct_15_20": 1.01,
+        "pct_gt_20": 0.65
+      }
+    },
+    "1yr": { "start_date": "30-06-1999", "average": 15.77, "...": "..." },
+    "3yr": { "start_date": "30-06-1999", "average": 15.16, "...": "..." },
+    "15yr": null
+  }
+}
+```
+
+---
+
 ## 💡 Usage Examples
 
 ### Using cURL
@@ -459,7 +626,8 @@ The backend aggregates data from multiple reliable sources:
 
 1. **Groww API**: Fund details, statistics, and portfolio information
 2. **MFAPI**: Historical NAV data and scheme information
-3. **CAS Statements**: Investor-specific holdings and transactions
+3. **AdvisorKhoj**: Benchmark trailing returns and rolling return distribution stats
+4. **CAS Statements**: Investor-specific holdings and transactions
 
 ## 🏦 Supported AMCs
 

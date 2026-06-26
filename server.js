@@ -69,6 +69,9 @@ app.get("/", (req, res) => {
       "POST /api/parse-cas",
       "POST /api/mf-stats",
       "POST /api/update-nav-only",
+      "GET /api/benchmark-returns",
+      "GET /api/benchmark-rolling-returns",
+      "GET /api/benchmark-rolling-returns-all",
     ],
   });
 });
@@ -529,6 +532,331 @@ app.post("/api/update-nav-only", async (req, res) => {
     });
   } catch (err) {
     console.error("Error updating NAV history:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+const toSlug = (name) =>
+  name
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+/**
+ * GET /api/benchmark-returns
+ *
+ * Scrapes the AdvisorKhoj benchmark monitor page and returns trailing return
+ * stats for all major market indices as a slug-keyed object.
+ *
+ * @query {string} [names] - Optional comma-separated list of benchmark slugs to filter
+ *   (e.g. "nifty-50-tri,bse-sensex"). If omitted, all benchmarks are returned.
+ *
+ * @returns {object} data - Object keyed by slug. Each entry contains:
+ *   name, ret_1w, ret_1m, ret_3m, ret_6m, ret_ytd, ret_1y, ret_3y, ret_5y, ret_10y, ret_since_launch
+ *   Numeric fields are floats; "-" values become null.
+ */
+app.get("/api/benchmark-returns", async (req, res) => {
+  try {
+    // Accept comma-separated slugs: ?names=nifty-50-tri,bse-sensex
+    const requestedNames = req.query.names
+      ? req.query.names
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+
+    const response = await fetch(
+      "https://www.advisorkhoj.com/mutual-funds-research/mutual-fund-benchmark-monitor",
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml",
+        },
+      },
+    );
+
+    if (!response.ok) {
+      return res
+        .status(502)
+        .json({ success: false, error: `Upstream returned ${response.status}` });
+    }
+
+    const html = await response.text();
+
+    const tbodyMatch = html.match(
+      /<table[^>]+id="tbl_scheme_returns"[^>]*>[\s\S]*?<tbody>([\s\S]*?)<\/tbody>/,
+    );
+    if (!tbodyMatch) {
+      return res
+        .status(502)
+        .json({ success: false, error: "Could not find benchmark table in response" });
+    }
+
+    const stripTags = (s) => s.replace(/<[^>]+>/g, "").trim();
+
+    const COLUMNS = [
+      "name",
+      "ret_1w",
+      "ret_1m",
+      "ret_3m",
+      "ret_6m",
+      "ret_ytd",
+      "ret_1y",
+      "ret_3y",
+      "ret_5y",
+      "ret_10y",
+      "ret_since_launch",
+    ];
+
+    const data = {};
+    const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+    let rowMatch;
+    while ((rowMatch = rowRegex.exec(tbodyMatch[1])) !== null) {
+      const cells = [];
+      const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+      let cellMatch;
+      while ((cellMatch = cellRe.exec(rowMatch[1])) !== null) {
+        cells.push(stripTags(cellMatch[1]));
+      }
+      if (cells.length !== COLUMNS.length) continue;
+
+      const slug = toSlug(cells[0]);
+      if (requestedNames.length > 0 && !requestedNames.includes(slug)) continue;
+
+      const entry = {};
+      COLUMNS.forEach((col, i) => {
+        entry[col] =
+          col === "name"
+            ? cells[i]
+            : cells[i] === "-"
+            ? null
+            : parseFloat(cells[i]);
+      });
+      data[slug] = entry;
+    }
+
+    res.json({
+      success: true,
+      count: Object.keys(data).length,
+      data,
+    });
+  } catch (err) {
+    console.error("Error fetching benchmark returns:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+const ROLLING_VALID_PERIODS = [
+  "1 Month", "1 Year", "2 Year", "3 Year",
+  "5 Year", "7 Year", "10 Year", "15 Year",
+];
+
+const PERIOD_SLUG = {
+  "1 Month": "1m",
+  "1 Year":  "1yr",
+  "2 Year":  "2yr",
+  "3 Year":  "3yr",
+  "5 Year":  "5yr",
+  "7 Year":  "7yr",
+  "10 Year": "10yr",
+  "15 Year": "15yr",
+};
+
+/**
+ * Fetches and parses rolling return stats for a single benchmark period from AdvisorKhoj.
+ *
+ * @param {string} scheme    - Benchmark name as it appears on AdvisorKhoj (e.g. "NIFTY 50 TRI").
+ * @param {string} [period]  - Rolling period label (e.g. "3 Year"). Omit to use upstream default.
+ * @param {string} [start_date] - Start date string (e.g. "30-06-1999"). Omit to use upstream default.
+ * @returns {object|null} Parsed result with scheme, period (slug), start_date, and data stats,
+ *   or null if the upstream page returned no matching data.
+ */
+async function fetchRollingReturnsForPeriod(scheme, period, start_date) {
+  const params = new URLSearchParams({ scheme });
+  if (period) params.set("period", period);
+  if (start_date) params.set("start_date", start_date);
+  const url = `https://www.advisorkhoj.com/mutual-funds-research/benchmark-rolling-return?${params}`;
+
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml",
+    },
+  });
+
+  if (!response.ok) return null;
+
+  const html = await response.text();
+
+  const tbodyMatch = html.match(
+    /<table[^>]+id="tbl_scheme_returns"[^>]*>[\s\S]*?<tbody>([\s\S]*?)<\/tbody>/,
+  );
+  if (!tbodyMatch) return null;
+
+  const stripTags = (s) => s.replace(/<[^>]+>/g, "").trim();
+  const COLUMNS = [
+    "name",
+    "average", "median", "maximum", "minimum", "std_deviation",
+    "pct_negative", "pct_0_8", "pct_8_12", "pct_12_15", "pct_15_20", "pct_gt_20",
+  ];
+
+  const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+  let rowMatch;
+  let parsed = null;
+
+  while ((rowMatch = rowRegex.exec(tbodyMatch[1])) !== null) {
+    const cells = [];
+    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+    let cellMatch;
+    while ((cellMatch = cellRe.exec(rowMatch[1])) !== null) {
+      cells.push(stripTags(cellMatch[1]));
+    }
+    if (cells.length !== COLUMNS.length) continue;
+
+    const entry = {};
+    COLUMNS.forEach((col, i) => {
+      entry[col] =
+        col === "name" ? cells[i] : cells[i] === "-" ? null : parseFloat(cells[i]);
+    });
+    parsed = entry;
+    break;
+  }
+
+  if (!parsed) return null;
+
+  const periodMatch = html.match(/<option[^>]+value="([^"]+)"[^>]*selected[^>]*>/i);
+  const startDateMatch = html.match(/id="txt_start_date"[^>]+value="([^"]+)"/);
+
+  const resolvedPeriod = periodMatch ? periodMatch[1] : (period || null);
+  return {
+    scheme: parsed.name,
+    period: resolvedPeriod ? (PERIOD_SLUG[resolvedPeriod] ?? resolvedPeriod) : null,
+    start_date: startDateMatch ? startDateMatch[1] : (start_date || null),
+    data: {
+      average: parsed.average,
+      median: parsed.median,
+      maximum: parsed.maximum,
+      minimum: parsed.minimum,
+      std_deviation: parsed.std_deviation,
+      distribution: {
+        pct_negative: parsed.pct_negative,
+        pct_0_8: parsed.pct_0_8,
+        pct_8_12: parsed.pct_8_12,
+        pct_12_15: parsed.pct_12_15,
+        pct_15_20: parsed.pct_15_20,
+        pct_gt_20: parsed.pct_gt_20,
+      },
+    },
+  };
+}
+
+/**
+ * GET /api/benchmark-rolling-returns
+ *
+ * Returns rolling return distribution stats for a single benchmark and period.
+ * The resolved period and start_date in the response are always extracted from
+ * the upstream HTML, not echoed from caller input.
+ *
+ * @query {string} scheme      - Required. Benchmark name (e.g. "NIFTY 50 TRI").
+ * @query {string} [period]    - Rolling period. Valid: "1 Month" | "1 Year" | "2 Year" |
+ *   "3 Year" | "5 Year" | "7 Year" | "10 Year" | "15 Year". Omit for upstream default.
+ * @query {string} [start_date] - Analysis start date (DD-MM-YYYY). Omit for upstream default.
+ *
+ * @returns {object} scheme, period (slug), start_date, data (average, median, maximum,
+ *   minimum, std_deviation, distribution buckets as percentages)
+ */
+app.get("/api/benchmark-rolling-returns", async (req, res) => {
+  const { scheme, period, start_date } = req.query;
+
+  if (!scheme) {
+    return res
+      .status(400)
+      .json({ success: false, error: "scheme query param is required" });
+  }
+
+  if (period && !ROLLING_VALID_PERIODS.includes(period)) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid period. Valid values: ${ROLLING_VALID_PERIODS.join(", ")}`,
+    });
+  }
+
+  try {
+    const result = await fetchRollingReturnsForPeriod(scheme, period, start_date);
+
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        error: "No data found — check scheme name, period, and start_date",
+      });
+    }
+
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error("Error fetching benchmark rolling returns:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/benchmark-rolling-returns-all
+ *
+ * Concurrently fetches rolling return stats for all 8 periods and returns them
+ * aggregated in a single response keyed by period slug.
+ * Periods with insufficient history or no data are returned as null rather than
+ * failing the entire request.
+ *
+ * @query {string} scheme       - Required. Benchmark name (e.g. "NIFTY 50 TRI").
+ * @query {string} [start_date] - Analysis start date (DD-MM-YYYY). Omit for upstream default.
+ *
+ * @returns {object} scheme name and data object keyed by period slug
+ *   ("1m" | "1yr" | "2yr" | "3yr" | "5yr" | "7yr" | "10yr" | "15yr").
+ *   Each entry contains start_date, average, median, maximum, minimum,
+ *   std_deviation, and distribution bucket percentages, or null if unavailable.
+ */
+app.get("/api/benchmark-rolling-returns-all", async (req, res) => {
+  const { scheme, start_date } = req.query;
+
+  if (!scheme) {
+    return res
+      .status(400)
+      .json({ success: false, error: "scheme query param is required" });
+  }
+
+  try {
+    const results = await Promise.all(
+      ROLLING_VALID_PERIODS.map((p) =>
+        fetchRollingReturnsForPeriod(scheme, p, start_date).catch(() => null),
+      ),
+    );
+
+    const data = {};
+    let schemeName = null;
+    for (let i = 0; i < ROLLING_VALID_PERIODS.length; i++) {
+      const period = ROLLING_VALID_PERIODS[i];
+      const key = PERIOD_SLUG[period];
+      const result = results[i];
+      if (result) {
+        if (!schemeName) schemeName = result.scheme;
+        data[key] = {
+          start_date: result.start_date,
+          ...result.data,
+        };
+      } else {
+        data[key] = null;
+      }
+    }
+
+    res.json({
+      success: true,
+      scheme: schemeName || scheme,
+      data,
+    });
+  } catch (err) {
+    console.error("Error fetching all rolling returns:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
