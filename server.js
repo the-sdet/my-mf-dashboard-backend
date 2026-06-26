@@ -137,7 +137,18 @@ async function pLimit(tasks, concurrency) {
 }
 
 // -------------------- MF DATA FETCH HELPERS --------------------
+const _inFlight = new Map();
+function dedupFetch(key, fetchFn) {
+  if (_inFlight.has(key)) return _inFlight.get(key);
+  const promise = fetchFn().finally(() => _inFlight.delete(key));
+  _inFlight.set(key, promise);
+  return promise;
+}
+
 async function getMFDetails(endpoint) {
+  return dedupFetch(`mfdetails:${endpoint}`, () => _getMFDetails(endpoint));
+}
+async function _getMFDetails(endpoint) {
   const url =
     "https://groww.in/v1/api/data/mf/web/v4/scheme/search/" + endpoint;
   try {
@@ -180,47 +191,67 @@ async function getMFDetails(endpoint) {
 }
 
 async function getFundStats(schemeCode) {
-  const url = `https://groww.in/v1/api/data/mf/web/v1/scheme/portfolio/${schemeCode}/stats`;
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
-    return await response.json();
-  } catch (err) {
-    console.error("Error fetching MF stats:", err);
-    return null;
-  }
+  return dedupFetch(`fundstats:${schemeCode}`, async () => {
+    const url = `https://groww.in/v1/api/data/mf/web/v1/scheme/portfolio/${schemeCode}/stats`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      console.error("Error fetching MF stats:", err);
+      return null;
+    }
+  });
 }
 
 async function getSimilarSchemes(category, subCategory, planType, schemeType) {
-  const params = new URLSearchParams({
-    category,
-    plan_type: planType,
-    sub_category: subCategory,
-    type: schemeType,
-    count: 10,
+  const key = `similar:${category}:${subCategory}:${planType}:${schemeType}`;
+  return dedupFetch(key, async () => {
+    const params = new URLSearchParams({
+      category,
+      plan_type: planType,
+      sub_category: subCategory,
+      type: schemeType,
+      count: 10,
+    });
+    const url = `https://groww.in/v1/api/data/mf/web/v1/similar/scheme/top?${params}`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      console.error("Error fetching similar schemes:", err);
+      return [];
+    }
   });
-  const url = `https://groww.in/v1/api/data/mf/web/v1/similar/scheme/top?${params}`;
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
-    return await response.json();
-  } catch (err) {
-    console.error("Error fetching similar schemes:", err);
-    return [];
-  }
 }
 
 async function getFundNAVHistory(schemeCode) {
-  const url = `https://api.mfapi.in/mf/${schemeCode}`;
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
-    const data = await response.json();
-    return data;
-  } catch (err) {
-    console.error("Error fetching NAV history:", err);
-    return null;
-  }
+  return dedupFetch(`navhistory:${schemeCode}`, async () => {
+    const url = `https://api.mfapi.in/mf/${schemeCode}`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      console.error("Error fetching NAV history:", err);
+      return null;
+    }
+  });
+}
+
+async function getFundLatestNAV(schemeCode) {
+  return dedupFetch(`navlatest:${schemeCode}`, async () => {
+    const url = `https://api.mfapi.in/mf/${schemeCode}/latest`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      console.error("Error fetching latest NAV:", err);
+      return null;
+    }
+  });
 }
 
 function _buildFundBase(mfData) {
@@ -418,6 +449,7 @@ app.post("/api/mf-peers", async (req, res) => {
         .json({ success: false, error: "funds array required" });
     }
 
+    const includeDetails = req.body.include_details !== false;
     const CONCURRENCY = 5;
     const tasks = funds.map((fund) => async () => {
       const schemes = await getSimilarSchemes(
@@ -426,16 +458,21 @@ app.post("/api/mf-peers", async (req, res) => {
         fund.plan_type,
         fund.scheme_type,
       );
-      const peerDetails = await Promise.all(
-        (schemes || []).map((peer) => getMFDetails(peer.search_id)),
-      );
-      const peers = (schemes || []).map((peer, i) => ({
-        ...peer,
-        amc: peerDetails[i]?.amc_info?.name || "",
-        isin: peerDetails[i]?.isin || "",
-        return_stats: peerDetails[i]?.return_stats?.[0] || {},
-        expense_ratio_history: peerDetails[i]?.historic_fund_expense || [],
-      }));
+      let peers;
+      if (includeDetails) {
+        const peerDetails = await Promise.all(
+          (schemes || []).map((peer) => getMFDetails(peer.search_id)),
+        );
+        peers = (schemes || []).map((peer, i) => ({
+          ...peer,
+          amc: peerDetails[i]?.amc_info?.name || "",
+          isin: peerDetails[i]?.isin || "",
+          return_stats: peerDetails[i]?.return_stats?.[0] || {},
+          expense_ratio_history: peerDetails[i]?.historic_fund_expense || [],
+        }));
+      } else {
+        peers = (schemes || []).map((peer) => ({ ...peer }));
+      }
       return { isin: fund.isin, peers };
     });
 
@@ -486,52 +523,31 @@ app.post("/api/update-nav-only", async (req, res) => {
         return;
       }
 
-      const navHistory = await getFundNAVHistory(scheme_code);
+      const latest = await getFundLatestNAV(scheme_code);
+      if (!latest?.data?.[0]) return;
 
-      if (navHistory && navHistory.data && navHistory.data.length > 0) {
-        let navEntries = navHistory.data;
-        let isFullHistory = false;
+      const { date, nav } = latest.data[0];
 
-        if (!last_nav_date) {
-          isFullHistory = true;
-        } else {
-          const [day, month, year] = last_nav_date.split("-");
-          const lastDate = new Date(`${year}-${month}-${day}`);
+      // Skip if this NAV date is not newer than what the client already has
+      if (last_nav_date && date === last_nav_date) return;
 
-          navEntries = navHistory.data.filter((entry) => {
-            const [entryDay, entryMonth, entryYear] = entry.date.split("-");
-            const entryDate = new Date(
-              `${entryYear}-${entryMonth}-${entryDay}`,
-            );
-            return entryDate > lastDate;
-          });
-        }
-
-        const latestNav = navHistory.data[0]?.nav;
-        const latestNavDate = navHistory.data[0]?.date;
-
-        if (navEntries.length > 0 || isFullHistory) {
-          navUpdates[isin] = {
-            latest_nav: latestNav,
-            latest_nav_date: latestNavDate,
-            nav_entries: navEntries,
-            is_full_history: isFullHistory,
-            meta: navHistory.meta,
-          };
-          updatedCount++;
-        }
-      }
+      navUpdates[isin] = {
+        latest_nav: nav,
+        latest_nav_date: date,
+        nav_entry: { date, nav },
+      };
+      updatedCount++;
     });
 
     await pLimit(tasks, CONCURRENCY);
 
     res.json({
       success: true,
-      message: `Found NAV data for ${updatedCount} out of ${isins.length} funds`,
+      message: `Found new NAV for ${updatedCount} out of ${isins.length} funds`,
       data: navUpdates,
     });
   } catch (err) {
-    console.error("Error updating NAV history:", err);
+    console.error("Error updating NAV:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -612,10 +628,11 @@ app.get("/api/benchmark-returns", async (req, res) => {
 
     const data = {};
     const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
     let rowMatch;
     while ((rowMatch = rowRegex.exec(tbodyMatch[1])) !== null) {
       const cells = [];
-      const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+      cellRe.lastIndex = 0;
       let cellMatch;
       while ((cellMatch = cellRe.exec(rowMatch[1])) !== null) {
         cells.push(stripTags(cellMatch[1]));
@@ -724,12 +741,13 @@ async function fetchRollingReturnsForPeriod(scheme, period, start_date) {
   ];
 
   const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+  const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
   let rowMatch;
   let parsed = null;
 
   while ((rowMatch = rowRegex.exec(tbodyMatch[1])) !== null) {
     const cells = [];
-    const cellRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+    cellRe.lastIndex = 0;
     let cellMatch;
     while ((cellMatch = cellRe.exec(rowMatch[1])) !== null) {
       cells.push(stripTags(cellMatch[1]));
