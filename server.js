@@ -240,6 +240,23 @@ async function getFundNAVHistory(schemeCode) {
   });
 }
 
+// Fetch NAV entries from startDate (DD-MM-YYYY) onwards.
+// Converts to YYYY-MM-DD for the query param; AMFI returns DD-MM-YYYY in data.
+async function getFundNavSince(schemeCode, startDate) {
+  const paramDate = startDate.split("-").reverse().join("-");
+  return dedupFetch(`navsince:${schemeCode}:${paramDate}`, async () => {
+    const url = `https://api.mfapi.in/mf/${schemeCode}?startDate=${paramDate}`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP error! ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      console.error("Error fetching NAV since date:", err);
+      return null;
+    }
+  });
+}
+
 async function getFundLatestNAV(schemeCode) {
   return dedupFetch(`navlatest:${schemeCode}`, async () => {
     const url = `https://api.mfapi.in/mf/${schemeCode}/latest`;
@@ -295,14 +312,19 @@ function _buildFundBase(mfData) {
 }
 
 // Full fetch: stats + NAV history. Peers are loaded separately via /api/mf-peers.
-async function getFundDetails(searchKey) {
+// lastNavDate (DD-MM-YYYY): if provided, fetches only entries since that date instead of full history.
+async function getFundDetails(searchKey, lastNavDate = null) {
   try {
     const mfData = await getMFDetails(searchKey);
     if (!mfData || !mfData.scheme_code) return null;
 
+    const navFetch = lastNavDate
+      ? getFundNavSince(mfData.scheme_code, lastNavDate)
+      : getFundNAVHistory(mfData.scheme_code);
+
     const [stats, navHistory] = await Promise.all([
       getFundStats(mfData.scheme_code),
-      getFundNAVHistory(mfData.scheme_code),
+      navFetch,
     ]);
 
     return {
@@ -311,6 +333,7 @@ async function getFundDetails(searchKey) {
       latest_nav: navHistory?.data?.[0]?.nav || 0,
       latest_nav_date: navHistory?.data?.[0]?.date || 0,
       nav_history: navHistory?.data || [],
+      nav_history_delta: lastNavDate ? true : false,
       meta: navHistory?.meta || {},
       similar_schemes: [],
     };
@@ -321,14 +344,22 @@ async function getFundDetails(searchKey) {
 }
 
 // Light fetch for past/redeemed holdings: metadata + optional NAV history. No stats or peers.
-async function getFundDetailsLight(searchKey, includeNav = false) {
+// lastNavDate (DD-MM-YYYY): if provided, fetches only entries since that date instead of full history.
+async function getFundDetailsLight(
+  searchKey,
+  includeNav = false,
+  lastNavDate = null,
+) {
   try {
     const mfData = await getMFDetails(searchKey);
     if (!mfData || !mfData.scheme_code) return null;
 
-    const navHistory = includeNav
-      ? await getFundNAVHistory(mfData.scheme_code)
-      : null;
+    let navHistory = null;
+    if (includeNav) {
+      navHistory = lastNavDate
+        ? await getFundNavSince(mfData.scheme_code, lastNavDate)
+        : await getFundNAVHistory(mfData.scheme_code);
+    }
 
     return {
       ..._buildFundBase(mfData),
@@ -336,6 +367,7 @@ async function getFundDetailsLight(searchKey, includeNav = false) {
       latest_nav: navHistory?.data?.[0]?.nav || null,
       latest_nav_date: navHistory?.data?.[0]?.date || null,
       nav_history: navHistory?.data || [],
+      nav_history_delta: includeNav && lastNavDate ? true : false,
       meta: navHistory?.meta || {},
       similar_schemes: [],
       _is_past: true,
@@ -346,18 +378,23 @@ async function getFundDetailsLight(searchKey, includeNav = false) {
   }
 }
 
+// navDates: { [searchKey]: lastNavDate (DD-MM-YYYY) } — triggers incremental NAV fetch per fund.
 async function fetchMFStats(
   searchKeys,
   lightSearchKeys = [],
   lightIncludeNav = false,
+  navDates = {},
 ) {
   try {
     const allFunds = {};
     const CONCURRENCY = 10;
 
-    const activeTasks = searchKeys.map((sk) => () => getFundDetails(sk));
+    const activeTasks = searchKeys.map(
+      (sk) => () => getFundDetails(sk, navDates[sk] || null),
+    );
     const lightTasks = lightSearchKeys.map(
-      (sk) => () => getFundDetailsLight(sk, lightIncludeNav),
+      (sk) => () =>
+        getFundDetailsLight(sk, lightIncludeNav, navDates[sk] || null),
     );
 
     const [activeResults, lightResults] = await Promise.all([
@@ -414,6 +451,7 @@ app.post("/api/mf-stats", async (req, res) => {
       searchKeys,
       lightSearchKeys = [],
       lightIncludeNav = false,
+      navDates = {},
     } = req.body;
 
     if (!searchKeys || !Array.isArray(searchKeys)) {
@@ -426,6 +464,7 @@ app.post("/api/mf-stats", async (req, res) => {
       searchKeys,
       lightSearchKeys,
       lightIncludeNav,
+      navDates,
     );
 
     res.json({
@@ -523,18 +562,24 @@ app.post("/api/update-nav-only", async (req, res) => {
         return;
       }
 
-      const latest = await getFundLatestNAV(scheme_code);
-      if (!latest?.data?.[0]) return;
+      // Use date-range fetch when we know the last update date, otherwise latest only.
+      const result = last_nav_date
+        ? await getFundNavSince(scheme_code, last_nav_date)
+        : await getFundLatestNAV(scheme_code);
 
-      const { date, nav } = latest.data[0];
+      if (!result?.data?.[0]) return;
 
-      // Skip if this NAV date is not newer than what the client already has
-      if (last_nav_date && date === last_nav_date) return;
+      // Filter out the entry matching last_nav_date — AMFI startDate is inclusive.
+      const newEntries = last_nav_date
+        ? result.data.filter((e) => e.date !== last_nav_date)
+        : result.data;
+
+      if (newEntries.length === 0) return;
 
       navUpdates[isin] = {
-        latest_nav: nav,
-        latest_nav_date: date,
-        nav_entry: { date, nav },
+        latest_nav: newEntries[0].nav,
+        latest_nav_date: newEntries[0].date,
+        nav_entries: newEntries,
       };
       updatedCount++;
     });
@@ -596,7 +641,10 @@ app.get("/api/benchmark-returns", async (req, res) => {
     if (!response.ok) {
       return res
         .status(502)
-        .json({ success: false, error: `Upstream returned ${response.status}` });
+        .json({
+          success: false,
+          error: `Upstream returned ${response.status}`,
+        });
     }
 
     const html = await response.text();
@@ -607,7 +655,10 @@ app.get("/api/benchmark-returns", async (req, res) => {
     if (!tbodyMatch) {
       return res
         .status(502)
-        .json({ success: false, error: "Could not find benchmark table in response" });
+        .json({
+          success: false,
+          error: "Could not find benchmark table in response",
+        });
     }
 
     const stripTags = (s) => s.replace(/<[^>]+>/g, "").trim();
@@ -648,8 +699,8 @@ app.get("/api/benchmark-returns", async (req, res) => {
           col === "name"
             ? cells[i]
             : cells[i] === "-"
-            ? null
-            : parseFloat(cells[i]);
+              ? null
+              : parseFloat(cells[i]);
       });
       data[slug] = entry;
     }
@@ -669,34 +720,40 @@ app.get("/api/benchmark-returns", async (req, res) => {
 });
 
 const SCHEME_SLUG_MAP = {
-  "nifty-50-tri":                "NIFTY 50 TRI",
-  "cnx-nifty":                   "CNX Nifty",
-  "nifty-next-50-tri":           "Nifty Next 50 TRI",
-  "nifty-100-tri":               "NIFTY 100 TRI",
-  "nifty-200-tri":               "NIFTY 200 TRI",
-  "nifty-500-tri":               "NIFTY 500 TRI",
-  "s-and-p-bse-sensex":          "S&P BSE Sensex",
-  "nifty-large-midcap-250-tri":  "NIFTY LARGE MIDCAP 250 TRI",
-  "nifty-smallcap-250-tri":      "NIFTY SMALLCAP 250 TRI",
-  "nifty-midcap-150-tri":        "NIFTY MIDCAP 150 TRI",
-  "nifty-midcap-100-tri":        "NIFTY MIDCAP 100 TRI",
-  "domestic-price-of-gold":      "Domestic Price of Gold",
-  "domestic-price-of-silver":    "Domestic Price of Silver",
-  "nifty-50-arbitrage-index":    "Nifty 50 Arbitrage Index",
+  "nifty-50-tri": "NIFTY 50 TRI",
+  "cnx-nifty": "CNX Nifty",
+  "nifty-next-50-tri": "Nifty Next 50 TRI",
+  "nifty-100-tri": "NIFTY 100 TRI",
+  "nifty-200-tri": "NIFTY 200 TRI",
+  "nifty-500-tri": "NIFTY 500 TRI",
+  "s-and-p-bse-sensex": "S&P BSE Sensex",
+  "nifty-large-midcap-250-tri": "NIFTY LARGE MIDCAP 250 TRI",
+  "nifty-smallcap-250-tri": "NIFTY SMALLCAP 250 TRI",
+  "nifty-midcap-150-tri": "NIFTY MIDCAP 150 TRI",
+  "nifty-midcap-100-tri": "NIFTY MIDCAP 100 TRI",
+  "domestic-price-of-gold": "Domestic Price of Gold",
+  "domestic-price-of-silver": "Domestic Price of Silver",
+  "nifty-50-arbitrage-index": "Nifty 50 Arbitrage Index",
 };
 
 const ROLLING_VALID_PERIODS = [
-  "1 Month", "1 Year", "2 Year", "3 Year",
-  "5 Year", "7 Year", "10 Year", "15 Year",
+  "1 Month",
+  "1 Year",
+  "2 Year",
+  "3 Year",
+  "5 Year",
+  "7 Year",
+  "10 Year",
+  "15 Year",
 ];
 
 const PERIOD_SLUG = {
   "1 Month": "1m",
-  "1 Year":  "1yr",
-  "2 Year":  "2yr",
-  "3 Year":  "3yr",
-  "5 Year":  "5yr",
-  "7 Year":  "7yr",
+  "1 Year": "1yr",
+  "2 Year": "2yr",
+  "3 Year": "3yr",
+  "5 Year": "5yr",
+  "7 Year": "7yr",
   "10 Year": "10yr",
   "15 Year": "15yr",
 };
@@ -736,8 +793,17 @@ async function fetchRollingReturnsForPeriod(scheme, period, start_date) {
   const stripTags = (s) => s.replace(/<[^>]+>/g, "").trim();
   const COLUMNS = [
     "name",
-    "average", "median", "maximum", "minimum", "std_deviation",
-    "pct_negative", "pct_0_8", "pct_8_12", "pct_12_15", "pct_15_20", "pct_gt_20",
+    "average",
+    "median",
+    "maximum",
+    "minimum",
+    "std_deviation",
+    "pct_negative",
+    "pct_0_8",
+    "pct_8_12",
+    "pct_12_15",
+    "pct_15_20",
+    "pct_gt_20",
   ];
 
   const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
@@ -757,7 +823,11 @@ async function fetchRollingReturnsForPeriod(scheme, period, start_date) {
     const entry = {};
     COLUMNS.forEach((col, i) => {
       entry[col] =
-        col === "name" ? cells[i] : cells[i] === "-" ? null : parseFloat(cells[i]);
+        col === "name"
+          ? cells[i]
+          : cells[i] === "-"
+            ? null
+            : parseFloat(cells[i]);
     });
     parsed = entry;
     break;
@@ -765,14 +835,18 @@ async function fetchRollingReturnsForPeriod(scheme, period, start_date) {
 
   if (!parsed) return null;
 
-  const periodMatch = html.match(/<option[^>]+value="([^"]+)"[^>]*selected[^>]*>/i);
+  const periodMatch = html.match(
+    /<option[^>]+value="([^"]+)"[^>]*selected[^>]*>/i,
+  );
   const startDateMatch = html.match(/id="txt_start_date"[^>]+value="([^"]+)"/);
 
-  const resolvedPeriod = periodMatch ? periodMatch[1] : (period || null);
+  const resolvedPeriod = periodMatch ? periodMatch[1] : period || null;
   return {
     scheme: parsed.name,
-    period: resolvedPeriod ? (PERIOD_SLUG[resolvedPeriod] ?? resolvedPeriod) : null,
-    start_date: startDateMatch ? startDateMatch[1] : (start_date || null),
+    period: resolvedPeriod
+      ? (PERIOD_SLUG[resolvedPeriod] ?? resolvedPeriod)
+      : null,
+    start_date: startDateMatch ? startDateMatch[1] : start_date || null,
     data: {
       average: parsed.average,
       median: parsed.median,
@@ -812,7 +886,10 @@ app.get("/api/benchmark-rolling-returns", async (req, res) => {
   const { scheme, period, start_date } = req.query;
 
   const slugs = req.query.names
-    ? req.query.names.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+    ? req.query.names
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
     : [];
 
   const invalidSlugs = slugs.filter((s) => !SCHEME_SLUG_MAP[s]);
@@ -821,7 +898,10 @@ app.get("/api/benchmark-rolling-returns", async (req, res) => {
   if (validSlugs.length === 0 && !scheme) {
     return res
       .status(400)
-      .json({ success: false, error: "names or scheme query param is required" });
+      .json({
+        success: false,
+        error: "names or scheme query param is required",
+      });
   }
 
   if (period && !ROLLING_VALID_PERIODS.includes(period)) {
@@ -835,11 +915,17 @@ app.get("/api/benchmark-rolling-returns", async (req, res) => {
     if (slugs.length > 0) {
       const results = await Promise.all(
         validSlugs.map((slug) =>
-          fetchRollingReturnsForPeriod(SCHEME_SLUG_MAP[slug], period, start_date).catch(() => null),
+          fetchRollingReturnsForPeriod(
+            SCHEME_SLUG_MAP[slug],
+            period,
+            start_date,
+          ).catch(() => null),
         ),
       );
       const data = {};
-      validSlugs.forEach((slug, i) => { data[slug] = results[i] || null; });
+      validSlugs.forEach((slug, i) => {
+        data[slug] = results[i] || null;
+      });
       return res.json({
         success: true,
         count: validSlugs.length,
@@ -848,7 +934,11 @@ app.get("/api/benchmark-rolling-returns", async (req, res) => {
       });
     }
 
-    const result = await fetchRollingReturnsForPeriod(scheme, period, start_date);
+    const result = await fetchRollingReturnsForPeriod(
+      scheme,
+      period,
+      start_date,
+    );
     if (!result) {
       return res.status(404).json({
         success: false,
@@ -883,7 +973,10 @@ app.get("/api/benchmark-rolling-returns-all", async (req, res) => {
   const { scheme, start_date } = req.query;
 
   const slugs = req.query.names
-    ? req.query.names.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)
+    ? req.query.names
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
     : [];
 
   const invalidSlugs = slugs.filter((s) => !SCHEME_SLUG_MAP[s]);
@@ -892,12 +985,16 @@ app.get("/api/benchmark-rolling-returns-all", async (req, res) => {
   if (validSlugs.length === 0 && !scheme) {
     return res
       .status(400)
-      .json({ success: false, error: "names or scheme query param is required" });
+      .json({
+        success: false,
+        error: "names or scheme query param is required",
+      });
   }
 
-  const schemesToFetch = validSlugs.length > 0
-    ? validSlugs.map((slug) => ({ slug, name: SCHEME_SLUG_MAP[slug] }))
-    : [{ slug: null, name: scheme }];
+  const schemesToFetch =
+    validSlugs.length > 0
+      ? validSlugs.map((slug) => ({ slug, name: SCHEME_SLUG_MAP[slug] }))
+      : [{ slug: null, name: scheme }];
 
   try {
     const schemeResults = await Promise.all(
@@ -940,7 +1037,11 @@ app.get("/api/benchmark-rolling-returns-all", async (req, res) => {
 
     const results = schemeResults[0];
     const schemeName = results.find(Boolean)?.scheme || scheme;
-    res.json({ success: true, scheme: schemeName, data: buildPeriodData(results) });
+    res.json({
+      success: true,
+      scheme: schemeName,
+      data: buildPeriodData(results),
+    });
   } catch (err) {
     console.error("Error fetching all rolling returns:", err);
     res.status(500).json({ success: false, error: err.message });
